@@ -1,0 +1,371 @@
+// Código Luana Oliveira Sales - Maio de 2025
+
+// Localizacao de interesse
+var pt = geometry;
+
+// Colecao Sentinel 1
+var collectionS1 = ee.ImageCollection('COPERNICUS/S1_GRD')
+  .filterBounds(pt)
+  .filter(ee.Filter.eq('instrumentMode', 'IW'))
+  .filter(ee.Filter.eq('orbitProperties_pass', 'DESCENDING'))
+  .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'))
+  .select('VV');
+
+// Colecao Sentinel 2
+
+var collectionS2 = ee.ImageCollection('COPERNICUS/S2')
+  .filterBounds(pt)
+  .filterMetadata('CLOUDY_PIXEL_PERCENTAGE', 'less_than', 60)
+  .select(['B4', 'B3', 'B2', 'B8']);  // B3 (Green), B8 (NIR)
+  
+// Datas
+var beforeS1 = collectionS1.filterDate('2024-02-20', '2024-02-28');
+var afterS1 = collectionS1.filterDate('2024-11-01', '2024-11-12');
+
+var beforeS2 = collectionS2.filterDate('2024-02-20', '2024-02-28');
+var afterS2 = collectionS2.filterDate('2024-11-01', '2024-11-12');
+
+// Imagens
+print('Sentinel 1 Antes', beforeS1);
+print('Sentinel 1 Depois', afterS1);
+print('Sentinel 2 Antes', beforeS2);
+print('Sentinel 2 Depois', afterS2);
+
+// Mosaico
+var before_rawS1 = beforeS1.mosaic().clip(pt);
+var after_rawS1 = afterS1.mosaic().clip(pt);
+
+var before_rawS2 = beforeS2.mosaic().clip(pt);
+var after_rawS2 = afterS2.mosaic().clip(pt);
+
+// Sentinel 2
+// Funcao para calcular NDWI
+var makeNDWI = function(image) {
+  var ndwi = image.expression(
+    '(GREEN - NIR) / (GREEN + NIR)',
+    {
+      'NIR': image.select('B8'),  // NIR
+      'GREEN': image.select('B3')  // Green
+    }).rename('NDWI');
+  return image.addBands(ndwi);
+};
+
+// Aplicar NDWI
+var before_ndwi = makeNDWI(before_rawS2);
+var after_ndwi = makeNDWI(after_rawS2);
+
+// Máscaras NDWI ≥ 0 (regiões de água)
+var ndwi_mask_before = before_ndwi.select('NDWI').gte(-0.1).selfMask();
+var ndwi_mask_after = after_ndwi.select('NDWI').gte(-0.1).selfMask();
+
+// Sentinel 1
+// Funcao Filtro de Lee
+function leeFilter(img, size, enl) {
+  // https://github.com/senbox-org/s1tbx/blob/master/s1tbx-op-sar-processing/src/main/java/org/esa/s1tbx/sar/gpf/filtering/SpeckleFilters/Lee.java
+  enl = enl || 1.0;
+  var cu = 1.0 / Math.sqrt(enl);
+  var cu2 = cu * cu;
+
+  var kernel = ee.Kernel.square(size / 2, 'pixels', false);
+
+  var mean = img.reduceNeighborhood({
+    reducer: ee.Reducer.mean(),
+    kernel: kernel
+  });
+
+  var variance = img.reduceNeighborhood({
+    reducer: ee.Reducer.variance(),
+    kernel: kernel
+  });
+
+  var ci = variance.sqrt().divide(mean);
+  var cp = img;
+  var valid = mean.gt(0).and(variance.gt(0));
+
+  var w = ee.Image(1).subtract(ee.Image.constant(cu2).divide(ci.multiply(ci)));
+  w = w.clamp(0, 1);
+
+  var result = cp.multiply(w).add(mean.multiply(ee.Image(1).subtract(w)));
+  result = result.updateMask(valid).set('system:time_start', img.get('system:time_start'));
+
+  return result;
+}
+
+// Funcao converter de dB
+function toNatural(img) {
+  return ee.Image(10.0).pow(img.select(0).divide(10.0));
+}
+
+// Funcao converter para dB
+function toDB(img) {
+  return ee.Image(img).log10().multiply(10.0);
+}
+
+// Aplicar o filtro de Lee
+var before_db = ee.Image(toDB(leeFilter(toNatural(before_rawS1), 9, 1))) //pode ajustar esse valor
+var after_db = ee.Image(toDB(leeFilter(toNatural(after_rawS1), 9, 1))) //pode ajustar esse valor
+
+// Aplicar limite para o retroespalhamento
+var backscatter_mask_before = before_db.lt(-16).selfMask();  //pode ajustar esse valor
+var backscatter_mask_after = after_db.lt(-16).selfMask();  //pode ajustar esse valor
+
+// Sentinel 1 e 2
+// Funcao para converter mascara binaria em vetor poligonal e para calcular area de inundacao (ha)
+function maskToMainPolygon(maskImage, geometry, scale) {
+  var vectors = maskImage.reduceToVectors({
+    geometry: geometry,
+    scale: scale,
+    geometryType: 'polygon',
+    eightConnected: true,
+    labelProperty: 'water',
+    maxPixels: 1e13
+  });
+
+  var withArea = vectors.map(function(f) {
+    var area = f.geometry().area(1);  // margem de erro de 1 metro
+    return f.set('area', area);
+  });
+
+  var mainPolygon = withArea.sort('area', false).first(); // pega o primeiro direto
+
+  var areaHa = ee.Number(mainPolygon.get('area')).divide(10000); // converte para hectares
+
+  return {
+    polygon: ee.Feature(mainPolygon),
+    area_ha: areaHa
+  };
+}
+
+// Aplicar vetor e calcular area
+var result_beforeS1 = maskToMainPolygon(backscatter_mask_before, pt, 5);
+var water_before_vectorS1 = ee.FeatureCollection([result_beforeS1.polygon]);
+var area_beforeS1 = result_beforeS1.area_ha;
+
+var result_afterS1 = maskToMainPolygon(backscatter_mask_after, pt, 5);
+var water_after_vectorS1 = ee.FeatureCollection([result_afterS1.polygon]);
+var area_afterS1 = result_afterS1.area_ha;
+
+var result_beforeS2 = maskToMainPolygon(ndwi_mask_before, pt, 5);
+var water_before_vectorS2 = ee.FeatureCollection([result_beforeS2.polygon]);
+var area_beforeS2 = result_beforeS2.area_ha;
+
+var result_afterS2 = maskToMainPolygon(ndwi_mask_after, pt, 5);
+var water_after_vectorS2 = ee.FeatureCollection([result_afterS2.polygon]);
+var area_afterS2 = result_afterS2.area_ha;
+
+print('Area antes Sentinel 1 (ha)', area_beforeS1);
+print('Area depois Sentinel 1 (ha)', area_afterS1);
+print('Area antes Sentinel 2 (ha)', area_beforeS2);
+print('Area depois Sentinel 2 (ha)', area_afterS2);
+
+// Função para extrair a data de uma coleção de imagens
+function getDateFromCollection(collection) {
+  var firstImage = collection.first();
+  return ee.Date(firstImage.get('system:time_start')).format('YYYY-MM-dd');
+}
+
+// Coletar as datas automaticamente
+var dateBeforeS1 = getDateFromCollection(beforeS1);
+var dateAfterS1 = getDateFromCollection(afterS1);
+var dateBeforeS2 = getDateFromCollection(beforeS2);
+var dateAfterS2 = getDateFromCollection(afterS2);
+
+// Criar FeatureCollection com os resultados para S1 e S2
+var fc = ee.FeatureCollection([
+  ee.Feature(null, {
+    'date': dateBeforeS1,  // Data automática para antes do Sentinel-1
+    'flood_area': area_beforeS1,
+    'sensor': 'Sentinel-1'
+  }),
+  ee.Feature(null, {
+    'date': dateBeforeS2,  // Data automática para antes do Sentinel-2
+    'flood_area': area_beforeS2,
+    'sensor': 'Sentinel-2'
+  }),
+    ee.Feature(null, {
+    'date': dateAfterS1,  // Data automática para depois do Sentinel-1
+    'flood_area': area_afterS1,
+    'sensor': 'Sentinel-1'
+  }),
+  ee.Feature(null, {
+    'date': dateAfterS2,  // Data automática para depois do Sentinel-2
+    'flood_area': area_afterS2,
+    'sensor': 'Sentinel-2'
+  })
+]);
+
+// Exibir a FeatureCollection com as áreas de inundação e datas automáticas
+print('FeatureCollection de Areas de Inundacao com Datas:', fc);
+
+// Funcao para gerar grafico de area de inundacao por data e sansor
+var chart = ui.Chart.feature.groups({
+  features: fc,
+  xProperty: 'date',
+  yProperty: 'flood_area',
+  seriesProperty: 'sensor'
+})
+.setChartType('ColumnChart')
+.setOptions({
+  title: 'Area de Inundacao',
+  hAxis: {
+    title: 'Data',
+    slantedText: true,
+    slantedTextAngle: 45,
+    alignment: 'center'  
+  },
+  vAxis: { title: 'Area (ha)' },
+  colors: [
+    'skyblue',   // Sentinel-1
+    'aquamarine'        // Sentinel-2
+  ],
+  legend: { position: 'top', alignment: 'center' }
+});
+
+print(chart);
+
+// Visualização RGB para Sentinel-2
+var visRGB = {
+  bands: ['B4', 'B3', 'B2'],
+  min: 1000,
+  max: 5000, 
+  gamma: 1.3
+};
+
+// Aplicar contorno
+function aplicarEstiloContorno(featureCollection, cor, largura) {
+  return featureCollection.style({
+    color: cor,
+    fillColor: '00000000',  // sem preenchimento (transparente)
+    width: largura
+  });
+}
+
+var outline_beforeS1 = aplicarEstiloContorno(water_before_vectorS1, 'navy', 2);
+var outline_afterS1 = aplicarEstiloContorno(water_after_vectorS1, 'firebrick', 2);
+var outline_beforeS2 = aplicarEstiloContorno(water_before_vectorS2, 'deepskyblue', 2);
+var outline_afterS2 = aplicarEstiloContorno(water_after_vectorS2, 'orange', 2);
+
+Map.add
+
+// Centraliza o mapa
+Map.setControlVisibility({layerList: false});  // Oculta painel padrão
+Map.centerObject(pt, 15);  // Centraliza no ponto de interesse
+
+// Adiciona as camadas manualmente com 'Map.addLayer
+var layer_S1_before  = Map.addLayer(before_db,       {min: -25, max: 0}, 'Sentinel-1 antes VV (dB)', false);
+var layer_S1_after   = Map.addLayer(after_db,        {min: -25, max: 0}, 'Sentinel-1 depois VV (dB)', false);
+var layer_S2_before  = Map.addLayer(before_rawS2,    visRGB,            'Sentinel-2 antes (RGB)', false);
+var layer_S2_after   = Map.addLayer(after_rawS2,     visRGB,            'Sentinel-2 depois (RGB)', false);
+
+var layer_NDWI_S2_b  = Map.addLayer(before_ndwi.select('NDWI'), {min: -1, max: 1, palette: ['white', 'blue']}, 'Sentinel-2 NDWI antes', false);
+var layer_NDWI_S2_a  = Map.addLayer(after_ndwi.select('NDWI'),  {min: -1, max: 1, palette: ['white', 'blue']}, 'Sentinel-2 NDWI depois', false);
+
+var layer_mask_S1_b  = Map.addLayer(backscatter_mask_before, {palette: ['darkorchid'], opacity: 0.5}, 'Sentinel-1 Máscara de água antes', false);
+var layer_mask_S1_a  = Map.addLayer(backscatter_mask_after,  {palette: ['seagreen'], opacity: 0.5}, 'Sentinel-1 Mascara de água depois', false);
+var layer_mask_S2_b  = Map.addLayer(ndwi_mask_before,        {palette: ['orchid'], opacity: 0.1}, 'Sentinel-2 Mascara de água antes', false);
+var layer_mask_S2_a  = Map.addLayer(ndwi_mask_after,         {palette: ['palegreen'], opacity: 0.1}, 'Sentinel-2 Mascara de água depois', false);
+
+var layer_contour_S1_b  = Map.addLayer(outline_beforeS1, {color: 'navy'}, 'Sentinel-1 Contorno agua antes', false);
+var layer_contour_S1_a  = Map.addLayer(outline_afterS1, {color: 'firebrick'}, 'Sentinel-1 Contorno agua depois', false);
+var layer_contour_S2_b  = Map.addLayer(outline_beforeS2, {color: 'deepskyblue'}, 'Sentinel-2 Contorno agua antes', false);
+var layer_contour_S2_a  = Map.addLayer(outline_afterS2, {color: 'orange'}, 'Sentinel-2 Contorno agua depois', false);
+
+var layer_polygon_S1_b  = Map.addLayer(water_before_vectorS1, {color: 'navy', opacity: 0.5}, 'Sentinel-1 Poligono de agua antes', false);
+var layer_polygon_S1_a  = Map.addLayer(water_after_vectorS1, {color: 'firebrick', opacity: 0.5}, 'Sentinel-1 Poligono de agua depois', false);
+var layer_polygon_S2_b  = Map.addLayer(water_before_vectorS2, {color: 'deepskyblue', opacity: 0.1}, 'Sentinel-2 Poligono de agua antes', false);
+var layer_polygon_S2_a  = Map.addLayer(water_after_vectorS2, {color: 'orange', opacity: 0.1}, 'Sentinel-2 Poligono de agua depois', false);
+
+// Painel de controles (checkboxes)
+var controlPanel = ui.Panel({
+  style: { position: 'top-left', padding: '8px' }
+});
+controlPanel.add(ui.Label('Camadas Visíveis', {fontWeight: 'bold'}));
+
+// Lista de todas as camadas com seus nomes (mesma ordem dos addLayer)
+var layers = [
+  [layer_S1_before, 'Sentinel-1 antes VV (dB)'],
+  [layer_S1_after,  'Sentinel-1 depois VV (dB)'],
+  [layer_S2_before, 'Sentinel-2 antes (RGB)'],
+  [layer_S2_after,  'Sentinel-2 depois (RGB)'],
+  [layer_NDWI_S2_b, 'Sentinel-2 NDWI antes'],
+  [layer_NDWI_S2_a, 'Sentinel-2 NDWI depois'],
+  [layer_mask_S1_b, 'Sentinel-1 Mascara de agua antes'],
+  [layer_mask_S1_a, 'Sentinel-1 Mascara de agua depois'],
+  [layer_mask_S2_b, 'Sentinel-2 Mascara de agua antes'],
+  [layer_mask_S2_a, 'Sentinel-2 Mascara de agua depois'],
+  [layer_contour_S1_b, 'Sentinel-1 Contorno agua antes'],
+  [layer_contour_S1_a, 'Sentinel-1 Contorno agua depois'],
+  [layer_contour_S2_b, 'Sentinel-2 Contorno agua antes'],
+  [layer_contour_S2_a, 'Sentinel-2 Contorno agua depois'],
+  [layer_polygon_S1_b, 'Sentinel-1 Poligono de agua antes'],
+  [layer_polygon_S1_a, 'Sentinel-1 Poligono de agua depois'],
+  [layer_polygon_S2_b, 'Sentinel-2 Poligono de agua antes'],
+  [layer_polygon_S2_a, 'Sentinel-2 Poligono de agua depois']
+];
+
+// Funcao para adicionar checkbox e controlar layer
+function addLayerCheckbox(layer, label) {
+  var checkbox = ui.Checkbox(label, false);
+  checkbox.onChange(function(checked) {
+    layer.setShown(checked);
+    updateLegend();  // Atualiza a legenda dinâmica
+  });
+  controlPanel.add(checkbox);
+}
+layers.forEach(function(l) {
+  addLayerCheckbox(l[0], l[1]);
+});
+ui.root.insert(0, controlPanel);
+
+// === 4. Painel de Legenda Dinâmica ===
+var legend = ui.Panel({
+  style: { position: 'bottom-right', padding: '8px' }
+});
+ui.root.add(legend);
+
+// Mapa de cores por camada
+function getLayerColor(name) {
+  return {
+    'Sentinel-1 antes VV (dB)': 'white',
+    'Sentinel-1 depois VV (dB)': 'white',
+    'Sentinel-2 antes (RGB)': 'white',
+    'Sentinel-2 depois (RGB)': 'white',
+    'Sentinel-2 NDWI antes': 'white',
+    'Sentinel-2 NDWI depois': 'white',
+    'Sentinel-1 Mascara de agua antes': 'darkorchid',
+    'Sentinel-1 Mascara de agua depois': 'seagreen',
+    'Sentinel-2 Mascara de agua antes': 'orchid',
+    'Sentinel-2 Mascara de agua depois': 'palegreen',
+    'Sentinel-1 Contorno agua antes': 'navy',
+    'Sentinel-1 Contorno agua depois': 'firebrick',
+    'Sentinel-2 Contorno agua antes': 'deepskyblue',
+    'Sentinel-2 Contorno agua depois': 'orange',
+    'Sentinel-1 Poligono de agua antes': 'navy',
+    'Sentinel-1 Poligono de agua depois': 'firebrick',
+    'Sentinel-2 Poligono de agua antes': 'deepskyblue',
+    'Sentinel-2 Poligono de agua depois': 'orange'
+  }[name] || '#808080';
+}
+
+// Atualiza legenda de acordo com os checkboxes ativados
+function updateLegend() {
+  legend.clear();
+  legend.add(ui.Label('Legenda', {fontWeight: 'bold'}));
+
+  var n = controlPanel.widgets().length();
+  for (var i = 1; i < n; i++) {  // Começa de 1 para pular o título "Camadas Visíveis"
+    var widget = controlPanel.widgets().get(i);
+    if (widget.getValue && widget.getValue()) {
+      var name = widget.getLabel();
+      var color = getLayerColor(name);
+      var colorBox = ui.Label('', {
+        backgroundColor: color,
+        padding: '8px',
+        margin: '0 4px 0 0'
+      });
+      var label = ui.Label(name);
+      var row = ui.Panel([colorBox, label], ui.Panel.Layout.Flow('horizontal'));
+      legend.add(row);
+    }
+  }
+}
