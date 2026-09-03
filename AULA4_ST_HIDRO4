@@ -1,0 +1,32 @@
+// Defina sua área de estudo
+// Código Luana Oliveira Sales abril de 2025
+// Gera máscara de água do Sentinel-1 com base em limiar
+
+// Coleção Sentinel-1
+var s1 = ee.ImageCollection('COPERNICUS/S1_GRD')
+  .filterBounds(aoi)
+  .filterDate('2024-11-01', '2024-11-30')
+  .filter(ee.Filter.eq('instrumentMode', 'IW'))
+  .filter(ee.Filter.eq('orbitProperties_pass', 'DESCENDING'))
+  .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'))
+  .select('VV');
+
+// Lista datas disponíveis
+var listaDatas = s1.aggregate_array('system:index');
+
+print('Imagens disponíveis:', listaDatas);
+
+// Escolha a imagem pela posição na lista (exemplo: 0 é a primeira)
+var imgEscolhida = ee.Image(s1.toList(s1.size()).get(0));  // Troque o número aqui pra mudar a imagem
+
+// Visualiza data da imagem escolhida
+var dataEscolhida = imgEscolhida.date().format('YYYY-MM-dd');
+print('Data escolhida:', dataEscolhida);
+
+// Threshold VV para área alagada (altere conforme necessário)
+var waterMask = imgEscolhida.lt(-17);
+
+// Visualização
+Map.centerObject(aoi, 10);
+Map.addLayer(imgEscolhida, {min:-25, max:0}, 'VV Image');
+Map.addLayer(waterMask.updateMask(waterMask), {palette:'blue'}, 'Inundação');
