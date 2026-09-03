@@ -1,0 +1,40 @@
+// Load Sentinel-1 images to map flooding
+
+// Default location
+var pt = geometry;
+
+// Load Sentinel-1 C-band SAR Ground Range collection (log scaling, VV co-polar)
+var collection = ee.ImageCollection('COPERNICUS/S1_GRD')
+.filterBounds(pt)
+.filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'))
+.select('VV');//altere aqui a polarizacao 
+
+// Filter by date
+var before = collection.filterDate('2015-09-01', '2015-09-30').mosaic();
+var after = collection.filterDate('2015-10-01', '2015-10-15').mosaic();
+print(before);
+print(after);
+
+// Threshold smoothed radar intensities to identify "flooded" areas.
+var SMOOTHING_RADIUS = 150; 
+var after_smoothed = after.focal_median(SMOOTHING_RADIUS, 'circle', 'meters')
+var before_smoothed = before.focal_median(SMOOTHING_RADIUS, 'circle', 'meters')
+
+
+// Mapeando considerando limiares
+var THRESHOLD = -12;//altere aqui o limiar
+//var thresholded = after.lt(THRESHOLD);
+var water_mask = after_smoothed.lt(THRESHOLD);
+
+//Surface Water Index 
+// add formula aqui
+
+// Display map
+Map.centerObject(pt, 10);
+Map.addLayer(before, {min:-30,max:0}, 'Before flood',false);
+Map.addLayer(after, {min:-30,max:0}, 'After flood',false);
+Map.addLayer(after_smoothed, {min:-30,max:0}, 'After flood smoothed');
+Map.addLayer(before_smoothed, {min:-30,max:0}, 'Before flood smoothed',false);
+// Map.addLayer(after.subtract(before), {min:-10,max:10}, 'After - before', 0);
+
+Map.addLayer(water_mask.updateMask(water_mask), {palette:"0000FF"},'flooded areas - blue',1);
