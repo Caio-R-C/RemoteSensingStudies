@@ -1,0 +1,93 @@
+
+// Calcula NDWI, ANDWI e mNDWI
+
+var start_date = ee.Date.fromYMD(2015, 10, 12);
+var end_date = ee.Date.fromYMD(2015, 10, 15);
+
+
+// LANDSAT 8
+var col_landsat_8b = ee.ImageCollection('LANDSAT/LC08/C02/T1_L2')
+  .filterDate(start_date, end_date)
+  .select([1,2,3,4,5,6,7,10], ['BB','BG','BR','BNIR','BSWIR_1','BSWIR_2','BT','pixel_qa'])
+  .filterMetadata('CLOUD_COVER', 'less_than', 60)
+  .filterBounds(geometry);
+  
+var col_landsat_tot = col_landsat_8b
+//printar a colecao de imagens no console
+print('Imagens selecionadas:', col_landsat_tot);
+
+var makeNDWI = function(image)
+{
+  var ndwi = image.expression(
+    '(GREEN - NIR) / (GREEN + NIR)',
+    {
+      'NIR': image.select('BNIR'),
+      'GREEN': image.select('BG')
+    }).rename('NDWI');
+  return image.addBands(ndwi);
+};
+
+// Forma simples:
+// var ndwi = image.normalizedDifference(['B3', 'B5']);
+
+
+var makeaNDWI = function(image)
+{ var andwi = image.expression(
+    '((RED + GREEN + BLUE) - (NIR + SWIR1 + SWIR2)) / ((RED + GREEN + BLUE) + (NIR + SWIR1 + SWIR2))',
+    {
+      'BLUE': image.select('BB'),
+      'RED': image.select('BR'),
+      'NIR': image.select('BNIR'),
+      'GREEN': image.select('BG'),
+      'SWIR1': image.select('BSWIR_1'),
+      'SWIR2': image.select('BSWIR_2')
+    }).rename('aNDWI');
+  return image.addBands(andwi);
+};
+
+var makemNDWI = function(image)
+{
+  var mndwi = image.expression(
+    '(GREEN - SWIR1) / (GREEN + SWIR1)',
+    {
+      'SWIR1': image.select('BSWIR_1'),
+      'GREEN': image.select('BG')
+    }).rename('mNDWI');
+  return image.addBands(mndwi);
+};
+
+var ndwi = col_landsat_tot.map(makeNDWI);
+var andwi= col_landsat_tot.map(makeaNDWI);
+var mndwi= col_landsat_tot.map(makemNDWI);
+
+// reduce the image collection to one image by summing the rasters
+var ndwi = ndwi.select(['NDWI']);
+var ndwi_mean = ndwi.reduce(ee.Reducer.mean());
+
+var mndwi = mndwi.select(['mNDWI']);
+var mndwi_mean = mndwi.reduce(ee.Reducer.mean());
+
+var andwi = andwi.select(['aNDWI']);
+var andwi_mean = andwi.reduce(ee.Reducer.mean());
+
+
+//adiciona as imagens selecionadas ao mapa
+var ndwiViz = {min: -0.5, max: 0.75, palette: ['00FFFF', '0000FF']};
+Map.addLayer(ndwi_mean,ndwiViz, 'NDWI', false);
+Map.addLayer(mndwi_mean,ndwiViz, 'MNDWI', false);
+Map.addLayer(andwi_mean,ndwiViz, 'ANDWI', false);
+var col_landsat_tot_mean = col_landsat_tot.reduce(ee.Reducer.mean())
+var vis_composition = {min: 0,max: 20000,bands: ['BR', 'BG', 'BB'],gamma: [0.95, 1.1, 1]};
+Map.addLayer(col_landsat_tot,vis_composition,'True color');
+
+
+// Mask the non-watery parts of the image, where NDWI < 0
+var ndwiMasked = ndwi_mean.updateMask(ndwi_mean.gte(0.03));
+Map.addLayer(ndwiMasked, ndwiViz, 'NDWI masked', false);
+
+var mndwiMasked = mndwi_mean.updateMask(mndwi_mean.gte(0.03));
+Map.addLayer(mndwiMasked, ndwiViz, 'MNDWI masked', false);
+
+var andwiMasked = andwi_mean.updateMask(andwi_mean.gte(0.03));
+Map.addLayer(andwiMasked, ndwiViz, 'ANDWI masked', false);
+
