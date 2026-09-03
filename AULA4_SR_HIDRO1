@@ -1,0 +1,17 @@
+
+// Imgs ALOS/Palsar modo ScanSAR
+
+var collection = ee.ImageCollection('JAXA/ALOS/PALSAR-2/Level2_2/ScanSAR')
+//  .filterBounds(ee.Geometry.Point(-51.58, -29.57)) //RS
+//    .filterBounds(ee.Geometry.Point(-55.31034728688914,-2.2406770782272365)) //AM 
+ //   .filterBounds(ee.Geometry.Point(-49.73748513287041,-10.328419920934483)) //Javaes
+    .filterBounds(ee.Geometry.Point(-57.548736129022004,-17.832976269277665)) //Pantanal
+//    .filterBounds(geometry)
+    .filterDate('2025-05-01', '2025-06-30');
+var image = collection.first();
+print('Imagens selecionadas:', image);
+
+
+Map.addLayer(image.select(['HH']), {min: 0, max: 8000}, 'HH polarization');
+Map.addLayer(image.select(['HV']), {min: 0, max: 8000}, 'HV polarization');
+//Map.centerObject(image);
