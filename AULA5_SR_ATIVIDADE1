@@ -1,0 +1,402 @@
+//ROTINA PARA VISUALIZACAO DE PRODUTOS DE PRECIPITACAO NO GEE
+//ESTA ROTINA FOI DESENVOLVIDA PARA AUXILIAR NA VISUALIZACAO DE DADOS DE PRECIPITAÇÃO MEDIA MENSAL E ANUAL DO PRODUTO CHIRPS
+//ELABORADA POR JÉSSICA R. FONTOURA 
+//DISCPLINA DE SENSORIAMENTO REMOTO DO CICLO HIDROLÓGICO MINISTRADA - 2021/1
+//PROFESSOR RODRIGO PAIVA 
+
+// Modificado por Alice Fassoni em Junho de 2025
+
+////////////////////////////////////////////////////////////////////////////////
+//Esta rotina calcula as medias mensais e anuais para o Brasil, para o Rio Grande do Sul e para a Amazônia
+//primeiramente para um longo periodo de 2000 a 2024, depois apenas para 2024
+//ela tambem calcula a diferenca entre a media anual de longo periodo e a media anual 2024
+//ao todo sao gerados seis graficos no console e tres mapas
+
+//ANTES DE INICIAR E PRECISO:
+//PASSO1: adicionar os shapefiles BR.zip e rs.zip nos Assets>NEW>shapefiles
+//PASSO2: basta alterar o caminho para seu usuario nas linhas 17 e 19 
+
+//importa a colecao e os shapefiles do brasil e do rs para calculo das medias mensais
+var chirps = ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY");
+var BR = ee.FeatureCollection('users/ocorrencia/BR');
+                                   //alterar para seu usuario
+var RS = ee.FeatureCollection('users/ocorrencia/rs');
+                                  //alterar para seu usuario
+var AM = ee.FeatureCollection('users/ocorrencia/Amazon');
+                                  //alterar para seu usuario
+                                  
+// set start and end year
+var startyear = 2000; 
+var endyear = 2023; 
+// make a date object
+var startdate = ee.Date.fromYMD(startyear, 1, 1);
+var enddate = ee.Date.fromYMD(endyear + 1, 1, 1);
+// make a list with years
+var years = ee.List.sequence(startyear, endyear);
+// make a list with months
+var months = ee.List.sequence(1, 12);
+// Specify Country names
+var area = BR;
+
+//agregagando os dados mensalmente
+var monthlyPrecip =  ee.ImageCollection.fromImages(
+  years.map(function (y) {
+    return months.map(function(m) {
+      var w = chirps.filter(ee.Filter.calendarRange(y, y, 'year'))
+                    .filter(ee.Filter.calendarRange(m, m, 'month'))
+                    .sum();
+      return w.set('year', y)
+              .set('month', m)
+              .set('system:time_start', ee.Date.fromYMD(y, m, 1));
+                        
+    });
+  }).flatten()
+);
+
+//criando mensal variavel para grafico
+var meanMonthlyP =  ee.ImageCollection.fromImages(
+  months.map(function (m) {
+    var w = monthlyPrecip.filter(ee.Filter.eq('month', m)).mean();
+    return w.set('month', m)
+            .set('system:time_start',ee.Date.fromYMD(1, m, 1)); 
+  }).flatten()
+);
+
+//variaveis para o grafico
+var title = {
+  title: 'Monthly precipitation Brasil (2000 - 2024)',
+  hAxis: {title: 'Time'},
+  vAxis: {title: 'Precipitation (mm)'},
+};
+
+//criando o grafico
+var chartMonthly = ui.Chart.image.seriesByRegion({
+  imageCollection: meanMonthlyP, 
+  regions: BR,
+  reducer: ee.Reducer.mean(),
+  band: 'precipitation',
+  scale: 2500,
+  xProperty: 'system:time_start',
+  seriesProperty: 'SITE'
+}).setOptions(title)
+  .setChartType('ColumnChart');
+
+print(chartMonthly);//adicionando grafico ao console
+
+//agregando os dados mensais anualmente
+var annualPrecip = meanMonthlyP.reduce(ee.Reducer.sum());
+// print(annualPrecip);//adicionando colecao ao console
+//adicionando ao mapa precipitacao anual
+Map.addLayer(annualPrecip,{min:0,max:2000,palette:"red,orange,blue,darkblue"},"Anual Mean 2000 - 2024");
+
+///////////////////////////REPETE TUDO APENAS PARA 2024//////////////////////////////////////////////////
+// set start and end year
+var startyear = 2024; 
+var endyear = 2024; 
+
+// make a date object
+var startdate = ee.Date.fromYMD(startyear, 1, 1);
+var enddate = ee.Date.fromYMD(endyear + 1, 1, 1);
+
+// make a list with years
+var years = ee.List.sequence(startyear, endyear);
+// make a list with months
+var months = ee.List.sequence(1, 12);
+// Specify Country names
+var area = BR;
+
+var monthlyPrecip =  ee.ImageCollection.fromImages(
+  years.map(function (y) {
+    return months.map(function(m) {
+      var w = chirps.filter(ee.Filter.calendarRange(y, y, 'year'))
+                    .filter(ee.Filter.calendarRange(m, m, 'month'))
+                    .sum();
+      return w.set('year', y)
+              .set('month', m)
+              .set('system:time_start', ee.Date.fromYMD(y, m, 1));
+                        
+    });
+  }).flatten()
+);
+
+var meanMonthlyP =  ee.ImageCollection.fromImages(
+  months.map(function (m) {
+    var w = monthlyPrecip.filter(ee.Filter.eq('month', m)).mean();
+    return w.set('month', m)
+            .set('system:time_start',ee.Date.fromYMD(1, m, 1)); 
+  }).flatten()
+);
+
+//determina media do ano de 2024
+var annualPrecip2 = meanMonthlyP.reduce(ee.Reducer.sum());
+//print(annualPrecip2);
+Map.addLayer(annualPrecip2,{min:0,max:2000,palette:"red,orange,blue,darkblue"},"Anual Mean 2024")
+//determina a diferenca entre a precipitacao de longo prazo e a do ano de 2020
+var diferenca = annualPrecip2.subtract(annualPrecip)
+Map.addLayer(diferenca,{min:-500,max:500,palette:"red,orange,blue,darkblue"},"Diferença")
+
+var title = {
+  title: 'Monthly precipitation Brasil (2024)',
+  hAxis: {title: 'Time'},
+  vAxis: {title: 'Precipitation (mm)'},
+};
+
+
+var chartMonthly = ui.Chart.image.seriesByRegion({
+  imageCollection: meanMonthlyP, 
+  regions: BR,
+  reducer: ee.Reducer.mean(),
+  band: 'precipitation',
+  scale: 2500,
+  xProperty: 'system:time_start',
+  seriesProperty: 'SITE'
+}).setOptions(title)
+  .setChartType('ColumnChart');
+
+print(chartMonthly);
+/////////////////////////////////////REPETE TUDO PARA O//RS///////////////////////////////////////////
+// set start and end year
+var startyear = 2000; 
+var endyear = 2023; 
+
+// make a date object
+var startdate = ee.Date.fromYMD(startyear, 1, 1);
+var enddate = ee.Date.fromYMD(endyear + 1, 1, 1);
+
+// make a list with years
+var years = ee.List.sequence(startyear, endyear);
+// make a list with months
+var months = ee.List.sequence(1, 12);
+
+// Specify Country names
+var area = RS;
+
+
+var monthlyPrecip =  ee.ImageCollection.fromImages(
+  years.map(function (y) {
+    return months.map(function(m) {
+      var w = chirps.filter(ee.Filter.calendarRange(y, y, 'year'))
+                    .filter(ee.Filter.calendarRange(m, m, 'month'))
+                    .sum();
+      return w.set('year', y)
+              .set('month', m)
+              .set('system:time_start', ee.Date.fromYMD(y, m, 1));
+                        
+    });
+  }).flatten()
+);
+
+
+var meanMonthlyP =  ee.ImageCollection.fromImages(
+  months.map(function (m) {
+    var w = monthlyPrecip.filter(ee.Filter.eq('month', m)).mean();
+    return w.set('month', m)
+            .set('system:time_start',ee.Date.fromYMD(1, m, 1)); 
+  }).flatten()
+);
+
+
+var title = {
+  title: 'Monthly precipitation RS (2000 - 2024)',
+  hAxis: {title: 'Time'},
+  vAxis: {title: 'Precipitation (mm)'},
+};
+
+
+var chartMonthly = ui.Chart.image.seriesByRegion({
+  imageCollection: meanMonthlyP, 
+  regions: RS,
+  reducer: ee.Reducer.mean(),
+  band: 'precipitation',
+  scale: 2500,
+  xProperty: 'system:time_start',
+  seriesProperty: 'SITE'
+}).setOptions(title)
+  .setChartType('ColumnChart');
+
+print(chartMonthly);
+////////////////////////////////////REPETE TUDO APENAS PARA 2024 RS/////////////////////////////////////////
+// set start and end year
+var startyear = 2024; 
+var endyear = 2024; 
+
+// make a date object
+var startdate = ee.Date.fromYMD(startyear, 1, 1);
+var enddate = ee.Date.fromYMD(endyear + 1, 1, 1);
+
+// make a list with years
+var years = ee.List.sequence(startyear, endyear);
+// make a list with months
+var months = ee.List.sequence(1, 12);
+
+// Specify Country names
+var area = RS;
+
+
+var monthlyPrecip =  ee.ImageCollection.fromImages(
+  years.map(function (y) {
+    return months.map(function(m) {
+      var w = chirps.filter(ee.Filter.calendarRange(y, y, 'year'))
+                    .filter(ee.Filter.calendarRange(m, m, 'month'))
+                    .sum();
+      return w.set('year', y)
+              .set('month', m)
+              .set('system:time_start', ee.Date.fromYMD(y, m, 1));
+                        
+    });
+  }).flatten()
+);
+
+
+var meanMonthlyP =  ee.ImageCollection.fromImages(
+  months.map(function (m) {
+    var w = monthlyPrecip.filter(ee.Filter.eq('month', m)).mean();
+    return w.set('month', m)
+            .set('system:time_start',ee.Date.fromYMD(1, m, 1)); 
+  }).flatten()
+);
+
+
+var title = {
+  title: 'Monthly precipitation RS (2024)',
+  hAxis: {title: 'Time'},
+  vAxis: {title: 'Precipitation (mm)'},
+};
+
+
+var chartMonthly = ui.Chart.image.seriesByRegion({
+  imageCollection: meanMonthlyP, 
+  regions: RS,
+  reducer: ee.Reducer.mean(),
+  band: 'precipitation',
+  scale: 2500,
+  xProperty: 'system:time_start',
+  seriesProperty: 'SITE'
+}).setOptions(title)
+  .setChartType('ColumnChart');
+
+print(chartMonthly);
+
+
+/////////////////////////////////////REPETE TUDO PARA a AM///////////////////////////////////////////
+// set start and end year
+var startyear = 2000; 
+var endyear = 2022; 
+
+// make a date object
+var startdate = ee.Date.fromYMD(startyear, 1, 1);
+var enddate = ee.Date.fromYMD(endyear + 1, 1, 1);
+
+// make a list with years
+var years = ee.List.sequence(startyear, endyear);
+// make a list with months
+var months = ee.List.sequence(1, 12);
+
+// Specify Country names
+var area = AM;
+
+
+var monthlyPrecip =  ee.ImageCollection.fromImages(
+  years.map(function (y) {
+    return months.map(function(m) {
+      var w = chirps.filter(ee.Filter.calendarRange(y, y, 'year'))
+                    .filter(ee.Filter.calendarRange(m, m, 'month'))
+                    .sum();
+      return w.set('year', y)
+              .set('month', m)
+              .set('system:time_start', ee.Date.fromYMD(y, m, 1));
+                        
+    });
+  }).flatten()
+);
+
+
+var meanMonthlyP =  ee.ImageCollection.fromImages(
+  months.map(function (m) {
+    var w = monthlyPrecip.filter(ee.Filter.eq('month', m)).mean();
+    return w.set('month', m)
+            .set('system:time_start',ee.Date.fromYMD(1, m, 1)); 
+  }).flatten()
+);
+
+
+var title = {
+  title: 'Monthly precipitation AM (2000 - 2024)',
+  hAxis: {title: 'Time'},
+  vAxis: {title: 'Precipitation (mm)'},
+};
+
+
+var chartMonthly = ui.Chart.image.seriesByRegion({
+  imageCollection: meanMonthlyP, 
+  regions: AM,
+  reducer: ee.Reducer.mean(),
+  band: 'precipitation',
+  scale: 2500,
+  xProperty: 'system:time_start',
+  seriesProperty: 'SITE'
+}).setOptions(title)
+  .setChartType('ColumnChart');
+
+print(chartMonthly);
+////////////////////////////////////REPETE TUDO APENAS PARA 2024 AM/////////////////////////////////////////
+// set start and end year
+var startyear = 2024; 
+var endyear = 2024; 
+
+// make a date object
+var startdate = ee.Date.fromYMD(startyear, 1, 1);
+var enddate = ee.Date.fromYMD(endyear + 1, 1, 1);
+
+// make a list with years
+var years = ee.List.sequence(startyear, endyear);
+// make a list with months
+var months = ee.List.sequence(1, 12);
+
+// Specify Country names
+var area = AM;
+
+
+var monthlyPrecip =  ee.ImageCollection.fromImages(
+  years.map(function (y) {
+    return months.map(function(m) {
+      var w = chirps.filter(ee.Filter.calendarRange(y, y, 'year'))
+                    .filter(ee.Filter.calendarRange(m, m, 'month'))
+                    .sum();
+      return w.set('year', y)
+              .set('month', m)
+              .set('system:time_start', ee.Date.fromYMD(y, m, 1));
+                        
+    });
+  }).flatten()
+);
+
+
+var meanMonthlyP =  ee.ImageCollection.fromImages(
+  months.map(function (m) {
+    var w = monthlyPrecip.filter(ee.Filter.eq('month', m)).mean();
+    return w.set('month', m)
+            .set('system:time_start',ee.Date.fromYMD(1, m, 1)); 
+  }).flatten()
+);
+
+
+var title = {
+  title: 'Monthly precipitation AM (2024)',
+  hAxis: {title: 'Time'},
+  vAxis: {title: 'Precipitation (mm)'},
+};
+
+
+var chartMonthly = ui.Chart.image.seriesByRegion({
+  imageCollection: meanMonthlyP, 
+  regions: AM,
+  reducer: ee.Reducer.mean(),
+  band: 'precipitation',
+  scale: 2500,
+  xProperty: 'system:time_start',
+  seriesProperty: 'SITE'
+}).setOptions(title)
+  .setChartType('ColumnChart');
+
+print(chartMonthly);
