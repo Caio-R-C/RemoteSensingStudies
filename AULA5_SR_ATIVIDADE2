@@ -1,0 +1,35 @@
+//ROTINA PARA VISUALIZACAO DE PRODUTOS DE PRECIPITACAO NO GEE
+//ESTA ROTINA FOI DESENVOLVIDA PARA AUXILIAR NA VISUALIZACAO DE DADOS DE PRECIPITAÇÃO DOS PRODUTOS DE SATELITE GPM E CHIRPS PARA DOIS EVENTOS EXTREMOS
+//ELABORADA POR JÉSSICA R. FONTOURA 
+//DISCPLINA DE SENSORIAMENTO REMOTO DO CICLO HIDROLÓGICO MINISTRADA - 2021/1
+//PROFESSOR RODRIGO PAIVA 
+////////////////////////////////////////////////////////////////////////////////
+
+//PASSO 1: importar as colecoes
+// import rainfall data
+var gpm = ee.ImageCollection("NASA/GPM_L3/IMERG_V06").select("precipitationCal");
+var chirps = ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY");
+
+//PASSO 2: filtrar para o periodo de interesse
+// select period of interest
+//evento 1 Santa Cruz do Sul
+var evento1_GPM = gpm.filterDate("2021-01-27","2021-01-28");
+var evento1_CHIRPS = chirps.filterDate("2021-01-27","2021-01-28");
+//evento 2 Santa Catarina
+var evento2_GPM = gpm.filterDate("2020-12-16","2020-12-17");
+var evento2_CHIRPS = chirps.filterDate("2020-12-16","2020-12-17");
+
+//PASSO 3: Calcula o valor total de precipitacao no periodo
+//calculating mean 
+var gpmSum = evento1_GPM.mean().multiply(24*30)//
+var chirpsSum = evento1_CHIRPS.sum();
+var gpmSum2 = evento2_GPM.mean().multiply(24*30)//
+var chirpsSum2 = evento2_CHIRPS.sum();
+
+//PASSO 4: Adiciona ao mapa
+Map.addLayer(gpmSum,{min:0,max:400,palette:"red,orange,blue,darkblue"},"GPM evento 28/01/2020")//ajuste a transparencia na barra ao lado do layer
+Map.addLayer(chirpsSum,{min:0,max:400,palette:"red,orange,blue,darkblue"},"CHIRPS evento 28/01/2020")//ajuste a transparencia na barra ao lado do layer
+Map.addLayer(gpmSum2,{min:0,max:400,palette:"red,orange,blue,darkblue"},"GPM evento 17/12/2017")//ajuste a transparencia na barra ao lado do layer
+Map.addLayer(chirpsSum2,{min:0,max:400,palette:"red,orange,blue,darkblue"},"CHIRPS 17/12/2017")//ajuste a transparencia na barra ao lado do layer
+
+//PASSO 5: Utilize a ferramenta INSPECTOR ao lado de console para visualizar valores
