@@ -1,0 +1,127 @@
+// =============================================================================
+// ROTINA: CHUVA MENSAL EM BACIA (GPM + CHIRPS + TRMM) + COMPARAÇÃO COM CAMELS-BR
+// =============================================================================
+
+// ------------------------- 1. DEFINIR A BACIA -------------------------
+// Substitua pela sua bacia (Asset do CAMELS-BR ou geometria desenhada)
+var bacia = ee.Geometry.Rectangle([-51.5, -30.5, -50.5, -29.5]); // EXEMPLO – TROQUE!
+
+Map.centerObject(bacia, 9);
+Map.addLayer(bacia, {color: 'red'}, 'Bacia');
+
+// ------------------------- 2. PERÍODO DE ANÁLISE -------------------------
+// Observação: TRMM vai apenas até ~2019
+var startDate = '2015-01-01';
+var endDate   = '2019-12-31';
+
+// ------------------------- 3. COLEÇÕES DE PRECIPITAÇÃO -------------------------
+// GPM IMERG V07 (mm/h, a cada 30 min)
+var gpm = ee.ImageCollection('NASA/GPM_L3/IMERG_V07')
+  .select('precipitation')
+  .filterDate(startDate, endDate)
+  .filterBounds(bacia);
+
+// CHIRPS diário (mm/dia)
+var chirps = ee.ImageCollection('UCSB-CHG/CHIRPS/DAILY')
+  .filterDate(startDate, endDate)
+  .filterBounds(bacia);
+
+// TRMM 3B42 (mm/h, a cada 3 horas) – disponível até final de 2019
+var trmm = ee.ImageCollection('TRMM/3B42')
+  .select('precipitation')
+  .filterDate(startDate, endDate)
+  .filterBounds(bacia);
+
+// ------------------------- 4. FUNÇÃO PARA CALCULAR CHUVA MENSAL -------------------------
+function monthlyRainfall(collection, scaleFactor, bandName) {
+  // scaleFactor:
+  //   GPM  → 0.5  (30 min)
+  //   TRMM → 3    (3 horas)
+  //   CHIRPS → 1  (já em mm/dia)
+  
+  var monthly = ee.ImageCollection.fromImages(
+    ee.List.sequence(0, ee.Date(endDate).difference(ee.Date(startDate), 'month').subtract(1))
+      .map(function(m) {
+        var start = ee.Date(startDate).advance(m, 'month');
+        var end   = start.advance(1, 'month');
+        
+        var monthlySum = collection
+          .filterDate(start, end)
+          .sum()
+          .multiply(scaleFactor)
+          .rename(bandName)
+          .set('system:time_start', start.millis())
+          .set('month', start.format('YYYY-MM'));
+        
+        return monthlySum;
+      })
+  );
+  return monthly;
+}
+
+// Aplicando a função
+var gpmMonthly   = monthlyRainfall(gpm, 0.5, 'GPM_mm');
+var chirpsMonthly = monthlyRainfall(chirps, 1, 'CHIRPS_mm');
+var trmmMonthly  = monthlyRainfall(trmm, 3, 'TRMM_mm');   // ← TRMM adicionado
+
+// ------------------------- 5. EXTRAIR VALORES MÉDIOS NA BACIA -------------------------
+function extractBasinMean(image) {
+  var stats = image.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: bacia,
+    scale: 5000,
+    maxPixels: 1e9
+  });
+  return image.set(stats);
+}
+
+var gpmStats    = gpmMonthly.map(extractBasinMean);
+var chirpsStats = chirpsMonthly.map(extractBasinMean);
+var trmmStats   = trmmMonthly.map(extractBasinMean);
+
+// ------------------------- 6. TABELAS E GRÁFICOS -------------------------
+function toFeatures(collection, valueProperty) {
+  return collection.map(function(img) {
+    return ee.Feature(null, {
+      'date': img.get('month'),
+      'value': img.get(valueProperty)
+    });
+  });
+}
+
+var gpmTable    = toFeatures(gpmStats, 'GPM_mm');
+var chirpsTable = toFeatures(chirpsStats, 'CHIRPS_mm');
+var trmmTable   = toFeatures(trmmStats, 'TRMM_mm');
+
+// Imprime no console
+print('=== Chuva mensal GPM (mm) ===', gpmTable);
+print('=== Chuva mensal CHIRPS (mm) ===', chirpsTable);
+print('=== Chuva mensal TRMM (mm) ===', trmmTable);
+
+// Gráficos
+print(ui.Chart.feature.byFeature(gpmTable, 'date', 'value')
+  .setChartType('ColumnChart')
+  .setOptions({title: 'Chuva mensal GPM (mm)', hAxis: {title: 'Mês'}, vAxis: {title: 'mm'}, legend: {position: 'none'}}));
+
+print(ui.Chart.feature.byFeature(chirpsTable, 'date', 'value')
+  .setChartType('ColumnChart')
+  .setOptions({title: 'Chuva mensal CHIRPS (mm)', hAxis: {title: 'Mês'}, vAxis: {title: 'mm'}, legend: {position: 'none'}}));
+
+print(ui.Chart.feature.byFeature(trmmTable, 'date', 'value')
+  .setChartType('ColumnChart')
+  .setOptions({title: 'Chuva mensal TRMM (mm)', hAxis: {title: 'Mês'}, vAxis: {title: 'mm'}, legend: {position: 'none'}}));
+
+// ------------------------- 7. EXPORTAR (opcional) -------------------------
+/*
+Export.table.toDrive({collection: gpmTable, description: 'chuva_mensal_GPM', fileFormat: 'CSV'});
+Export.table.toDrive({collection: chirpsTable, description: 'chuva_mensal_CHIRPS', fileFormat: 'CSV'});
+Export.table.toDrive({collection: trmmTable, description: 'chuva_mensal_TRMM', fileFormat: 'CSV'});
+*/
+
+// ------------------------- 8. COMPARAÇÃO COM CAMELS-BR -------------------------
+print('-------------------------------------------------------------');
+print('COMPARAÇÃO COM CAMELS-BR:');
+print('1. Baixe os dados em: https://zenodo.org/records/15025488');
+print('2. Use as séries de precipitação da bacia (CHIRPS, CPC, MSWEP ou estações ANA)');
+print('3. Some os valores diários por mês e compare com os três produtos acima');
+print('-------------------------------------------------------------');
