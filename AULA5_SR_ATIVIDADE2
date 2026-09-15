@@ -5,31 +5,26 @@
 //PROFESSOR RODRIGO PAIVA 
 ////////////////////////////////////////////////////////////////////////////////
 
-//PASSO 1: importar as colecoes
-// import rainfall data
-var gpm = ee.ImageCollection("NASA/GPM_L3/IMERG_V06").select("precipitationCal");
+// PASSO 1
+var gpm = ee.ImageCollection('NASA/GPM_L3/IMERG_V07').select("precipitation");
 var chirps = ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY");
 
-//PASSO 2: filtrar para o periodo de interesse
-// select period of interest
-//evento 1 Santa Cruz do Sul
+// PASSO 2 (mantido)
 var evento1_GPM = gpm.filterDate("2021-01-27","2021-01-28");
 var evento1_CHIRPS = chirps.filterDate("2021-01-27","2021-01-28");
-//evento 2 Santa Catarina
 var evento2_GPM = gpm.filterDate("2020-12-16","2020-12-17");
 var evento2_CHIRPS = chirps.filterDate("2020-12-16","2020-12-17");
 
-//PASSO 3: Calcula o valor total de precipitacao no periodo
-//calculating mean 
-var gpmSum = evento1_GPM.mean().multiply(24*30)//
+// PASSO 3 (corrigido)
+var gpmSum  = evento1_GPM.sum().multiply(0.5);   // mm totais do dia
 var chirpsSum = evento1_CHIRPS.sum();
-var gpmSum2 = evento2_GPM.mean().multiply(24*30)//
+var gpmSum2 = evento2_GPM.sum().multiply(0.5);
 var chirpsSum2 = evento2_CHIRPS.sum();
 
-//PASSO 4: Adiciona ao mapa
-Map.addLayer(gpmSum,{min:0,max:400,palette:"red,orange,blue,darkblue"},"GPM evento 28/01/2020")//ajuste a transparencia na barra ao lado do layer
-Map.addLayer(chirpsSum,{min:0,max:400,palette:"red,orange,blue,darkblue"},"CHIRPS evento 28/01/2020")//ajuste a transparencia na barra ao lado do layer
-Map.addLayer(gpmSum2,{min:0,max:400,palette:"red,orange,blue,darkblue"},"GPM evento 17/12/2017")//ajuste a transparencia na barra ao lado do layer
-Map.addLayer(chirpsSum2,{min:0,max:400,palette:"red,orange,blue,darkblue"},"CHIRPS 17/12/2017")//ajuste a transparencia na barra ao lado do layer
+// PASSO 4
+Map.addLayer(gpmSum,  {min:0, max:400, palette:"red,orange,blue,darkblue"}, "GPM evento 27-28/01/2021");
+Map.addLayer(chirpsSum, {min:0, max:400, palette:"red,orange,blue,darkblue"}, "CHIRPS evento 27-28/01/2021");
+Map.addLayer(gpmSum2, {min:0, max:400, palette:"red,orange,blue,darkblue"}, "GPM evento 16-17/12/2020");
+Map.addLayer(chirpsSum2,{min:0, max:400, palette:"red,orange,blue,darkblue"}, "CHIRPS 16-17/12/2020");
 
 //PASSO 5: Utilize a ferramenta INSPECTOR ao lado de console para visualizar valores
