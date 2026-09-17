@@ -1,0 +1,135 @@
+// ********** IMPORTING MODIS RED AND INFRARED (NIR) REFLECTANCE DATA *****************************************
+var dataset = ee.ImageCollection('MODIS/006/MOD09Q1')// The MOD09A1 V6 Terra Surface Reflectance 8-Day Global 250m product provides an estimate of the surface spectral reflectance of Terra MODIS bands 1-7 at 500m resolution and corrected for atmospheric conditions
+                  .filter(ee.Filter.date('2000-01-01', '2020-12-31'));
+print(dataset,'MODIS COLLECTION')
+
+var dataset2 = ee.ImageCollection('MODIS/006/MOD09A1')// The MOD09A1 V6 Terra Surface Reflectance 8-Day Global 250m product provides an estimate of the surface spectral reflectance of Terra MODIS bands 1-7 at 500m resolution and corrected for atmospheric conditions
+                  .filter(ee.Filter.date('2000-01-01', '2020-12-31'));
+//print(dataset,'MODIS COLLECTION')
+
+var trueColor = dataset2.select(['sur_refl_b01', 'sur_refl_b04', 'sur_refl_b03']);//TRUE COLOR COMPOSITION RED,GREEN,BLUE
+var trueColorVis = {
+  min: -100.0,
+  max: 3000.0,
+};
+
+//********** CLOUD MASK ********
+
+var results=dataset;//auxiliar
+
+var f_cloudMask_SR = function(results) {
+  // If the cloud bit (5) is set and the cloud confidence (7)  // is high or the cloud shadow bit is set (3), then it's a bad pixel.
+var cloudShadowBitMask = (1 << 3);
+var cloudsBitMask = (1 << 5);
+var cloudConfidence = (1 << 7);
+  // Get the pixel QA band.
+var qa = results.select('QA');
+  // Both flags should be set to zero, indicating clear conditions.
+var mask = qa.bitwiseAnd(cloudShadowBitMask).eq(0).and(qa.bitwiseAnd(cloudsBitMask).eq(0)).and(qa.bitwiseAnd(cloudConfidence).eq(0));
+return results.updateMask(mask);
+};
+// Aplica funções nas coleções
+results = results.map(f_cloudMask_SR);
+//print(results,'Cloud mask');
+
+//********* DEFINING REGION *****
+//aplica buffer: caso nao queira basta destabilitar estas duas linhas
+var func_buffer = function(results) {return results.clip(geometry)};
+results = results.map(func_buffer);
+
+var func_buffer = function(results) {return results.clip(geometry)};
+dataset2 = dataset2.map(func_buffer);
+dataset2 = dataset2.filter(ee.Filter.date('2018-10-01', '2018-10-30')).mean();
+
+//ploting parameters
+var trueColor = dataset2.select(['sur_refl_b01', 'sur_refl_b04', 'sur_refl_b03']);
+Map.addLayer(trueColor, trueColorVis, 'Study Area');
+
+///WATER MASK
+var GlobalSurfaceWater1 = ee.Image('JRC/GSW1_2/GlobalSurfaceWater').clip(geometry);
+var occurrence1 = GlobalSurfaceWater1.select('occurrence');
+//CREATING TRESHOLD LAYER
+// Create a water mask layer, and set the image mask so that non-water areas are opaque.
+var water_mask_G1 = occurrence1.gt(90).unmask(0);
+//Define function
+var f_waterMask_SR_G1 = function(image) {
+  var mask2 = water_mask_G1.select(0); 
+  return image.updateMask(mask2);};
+//  
+//Applying function
+var waterMask_MODIS = results.map(f_waterMask_SR_G1);
+
+//DEFINING FUNCTION
+//equacao todos rios Fassoni et al. 2019
+var estimate_ssc = function(results) {
+    var ssc = results.expression('exp((20*RED)+(7.68*NIR)+(0.31*(RED/NIR)))', {
+        'NIR': results.select('sur_refl_b02').divide(10000), 
+        'RED': results.select('sur_refl_b01').divide(10000), 
+      }).rename('ssc');
+return results.addBands([ssc]);
+}; 
+
+//equacao solimoes Villar et al.  2018
+var estimate_ssc2 = function(results) {
+    var ssc2 = results.expression('759.12*(NIR/RED)**1.92', {
+        'NIR': results.select('sur_refl_b02').divide(10000), 
+        'RED': results.select('sur_refl_b01').divide(10000), 
+      }).rename('ssc2');
+return results.addBands([ssc2]);
+}; 
+
+//equacao madeira Villar et al.  2013
+var estimate_ssc3 = function(results) {
+    var ssc3 = results.expression('1020*(NIR/RED)**2.94', {
+        'NIR': results.select('sur_refl_b02').divide(10000), 
+        'RED': results.select('sur_refl_b01').divide(10000), 
+      }).rename('ssc3');
+return results.addBands([ssc3]);
+}; 
+
+//equacao Orinoco Yepez et al. 2018
+var estimate_ssc4 = function(results) {
+    var ssc4 = results.expression('1.35512*(NIR)*1000-2.9385', {
+        'NIR': results.select('sur_refl_b02').divide(10000), 
+        'RED': results.select('sur_refl_b01').divide(10000), 
+      }).rename('ssc4');
+return results.addBands([ssc4]);
+}; 
+
+//APPLYING FUNCTION
+results = waterMask_MODIS.map(estimate_ssc);
+var results2 = waterMask_MODIS.map(estimate_ssc2);
+var results3 = waterMask_MODIS.map(estimate_ssc3);
+var results4 = waterMask_MODIS.map(estimate_ssc4);
+
+
+// reduce the image collection to one image by summing the rasters
+var sediment = results.select(['ssc']);
+var annualssc = sediment.reduce(ee.Reducer.mean());
+var sediment2 = results2.select(['ssc2']);
+var annualssc2 = sediment2.reduce(ee.Reducer.mean());
+var sediment3 = results3.select(['ssc3']);
+var annualssc3 = sediment3.reduce(ee.Reducer.mean());
+var sediment4 = results4.select(['ssc4']);
+var annualssc4 = sediment4.reduce(ee.Reducer.mean());
+
+
+//seleciona apenas duas imagens para fins de vizualizacao
+var img_ssc_1 = sediment.filter(ee.Filter.date('2018-10-01', '2018-10-31')).mean();
+var img_ssc_2 = sediment2.filter(ee.Filter.date('2018-10-01', '2018-10-31')).mean();
+var img_ssc_3 = sediment3.filter(ee.Filter.date('2018-10-01', '2018-10-31')).mean();
+var img_ssc_4 = sediment4.filter(ee.Filter.date('2018-10-01', '2018-10-31')).mean();
+
+var palettes = require('users/gena/packages:palettes');
+var palette = palettes.misc.jet[7];
+// visualize annual concentration
+var sedColorVis2 = {
+  min: 0.0,
+  max: 150.0,
+  palette:palette,
+};
+
+Map.addLayer(img_ssc_1,sedColorVis2, 'Fassoni et al. 2019 - TSS (mg/L)');
+Map.addLayer(img_ssc_2,sedColorVis2, 'Villar et al. 2018 - TSS (mg/L)');
+Map.addLayer(img_ssc_3,sedColorVis2, 'Villar et al. 2013- TSS (mg/L)');
+Map.addLayer(img_ssc_4,sedColorVis2, 'Yepez et al. 2018 - TSS (mg/L)');
