@@ -1,0 +1,117 @@
+
+// Luana Sales 2025-1
+
+// 1. Definir ponto e buffer de 2 m
+var ponto   = ee.Geometry.Point([-57.4886, -18.0386]);
+var buffer2 = ponto.buffer(2);
+
+// 2. Tabela CMS completa
+var cms = ee.FeatureCollection([
+  ee.Feature(ponto, {Data: '2024-05-14', ConcentracaoMatSuspensao: 53.1}),
+  ee.Feature(ponto, {Data: '2023-10-26', ConcentracaoMatSuspensao: 98.7}),
+  ee.Feature(ponto, {Data: '2023-06-28', ConcentracaoMatSuspensao: 12.2}),
+  ee.Feature(ponto, {Data: '2022-04-22', ConcentracaoMatSuspensao: 38.4}),
+  ee.Feature(ponto, {Data: '2019-10-23', ConcentracaoMatSuspensao: 45.6}),
+  ee.Feature(ponto, {Data: '2019-07-14', ConcentracaoMatSuspensao: 21.5}),
+  ee.Feature(ponto, {Data: '2019-04-19', ConcentracaoMatSuspensao: 24.9}),
+  ee.Feature(ponto, {Data: '2018-07-13', ConcentracaoMatSuspensao: 37.5}),
+  ee.Feature(ponto, {Data: '2018-04-29', ConcentracaoMatSuspensao: 6.8}),
+  ee.Feature(ponto, {Data: '2017-10-17', ConcentracaoMatSuspensao: 64.7}),
+  ee.Feature(ponto, {Data: '2017-07-08', ConcentracaoMatSuspensao: 24.4}),
+  ee.Feature(ponto, {Data: '2017-04-19', ConcentracaoMatSuspensao: 24.9}),
+  ee.Feature(ponto, {Data: '2016-11-18', ConcentracaoMatSuspensao: 95.8}),
+  ee.Feature(ponto, {Data: '2016-08-15', ConcentracaoMatSuspensao: 30.4}),
+  ee.Feature(ponto, {Data: '2015-11-30', ConcentracaoMatSuspensao: 54.8}),
+  ee.Feature(ponto, {Data: '2015-08-29', ConcentracaoMatSuspensao: 19.2}),
+  ee.Feature(ponto, {Data: '2015-04-24', ConcentracaoMatSuspensao: 19.9}),
+  ee.Feature(ponto, {Data: '2014-11-13', ConcentracaoMatSuspensao: 68.2}),
+  ee.Feature(ponto, {Data: '2014-08-22', ConcentracaoMatSuspensao: 12.5}),
+  ee.Feature(ponto, {Data: '2014-04-16', ConcentracaoMatSuspensao: 15.8}),
+  ee.Feature(ponto, {Data: '2013-11-11', ConcentracaoMatSuspensao: 90.7}),
+  ee.Feature(ponto, {Data: '2013-08-09', ConcentracaoMatSuspensao: 26.2}),
+  ee.Feature(ponto, {Data: '2013-05-10', ConcentracaoMatSuspensao: 90.5}),
+  ee.Feature(ponto, {Data: '2012-12-08', ConcentracaoMatSuspensao: 63.3}),
+  ee.Feature(ponto, {Data: '2012-06-26', ConcentracaoMatSuspensao: 51.3}),
+  ee.Feature(ponto, {Data: '2012-04-03', ConcentracaoMatSuspensao: 44.1}),
+  ee.Feature(ponto, {Data: '2011-07-23', ConcentracaoMatSuspensao: 12.808}),
+  ee.Feature(ponto, {Data: '2010-10-15', ConcentracaoMatSuspensao: 53.73}),
+  ee.Feature(ponto, {Data: '2010-07-20', ConcentracaoMatSuspensao: 20.75}),
+  ee.Feature(ponto, {Data: '2010-04-05', ConcentracaoMatSuspensao: 19.32}),
+  ee.Feature(ponto, {Data: '2009-09-25', ConcentracaoMatSuspensao: 0}),
+  ee.Feature(ponto, {Data: '2009-06-27', ConcentracaoMatSuspensao: 18.64}),
+  ee.Feature(ponto, {Data: '2008-11-30', ConcentracaoMatSuspensao: 74.32}),
+  ee.Feature(ponto, {Data: '2008-08-29', ConcentracaoMatSuspensao: 25}),
+  ee.Feature(ponto, {Data: '2008-05-23', ConcentracaoMatSuspensao: 5.93}),
+  ee.Feature(ponto, {Data: '2007-10-30', ConcentracaoMatSuspensao: 72.8}),
+  ee.Feature(ponto, {Data: '2007-06-30', ConcentracaoMatSuspensao: 14.37})
+]);
+
+// 3. Carregar, filtrar e pré‑escalar Sentinel‑2 SR (L2A)
+var s2 = ee.ImageCollection('COPERNICUS/S2_SR')
+  .filterBounds(buffer2)
+  .filterDate('2007-06-14', '2024-05-30')
+  .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 50))
+  // para cada imagem, divide B4 por 10000 e mantém SCL:
+  .map(function(img) {
+    var b4 = img.select('B4').divide(10000).rename('B4');
+    var scl = img.select('SCL');
+    return b4.addBands(scl).copyProperties(img, img.propertyNames());
+  });
+
+// 4. Extrair para cada data a média da refletância B4 no buffer, só água
+var withB4 = cms.map(function(f) {
+  var date = ee.Date(f.get('Data'));
+  var img  = s2
+    .filterDate(date.advance(-15,'day'), date.advance(15,'day'))
+    .sort('system:time_start')
+    .first();
+  // se não houver imagem, retorna null; senão, reduz a banda já escalada:
+  var meanB4 = ee.Algorithms.If(
+    img,
+    img.updateMask(img.select('SCL').eq(6))  // só água
+       .select('B4')
+       .reduceRegion({
+         reducer: ee.Reducer.mean(),
+         geometry: buffer2,
+         scale: 10,
+         maxPixels: 1e8
+       }).get('B4'),
+    null
+  );
+  return f.set('B4', meanB4);
+});
+
+// 5. Filtrar apenas os registros com B4 != null
+var valid = ee.FeatureCollection(withB4)
+  .filter(ee.Filter.notNull(['B4']));
+
+// 1. Aplicar linearFit() para obter a e b
+var fit = valid.reduceColumns({
+  reducer: ee.Reducer.linearFit(),
+  selectors: ['B4', 'ConcentracaoMatSuspensao']
+});
+var a = fit.get('scale');
+var b = fit.get('offset');
+print('Inclinação (a):', a);
+print('Intercepto (b):', b);
+
+// 2. Calcular R² via pearsonsCorrelation()
+var corrDict = valid.reduceColumns({
+  reducer: ee.Reducer.pearsonsCorrelation(),
+  selectors: ['B4', 'ConcentracaoMatSuspensao']
+});
+var r = ee.Number(corrDict.get('correlation'));
+var r2 = r.pow(2);
+print('Coeficiente de determinação (R²):', r2);
+
+// 3. Gráfico de dispersão com linha de tendência
+var chart = ui.Chart.feature.byFeature(valid, 'B4', 'ConcentracaoMatSuspensao')
+  .setChartType('ScatterChart')
+  .setOptions({
+    title: 'B4 vs CSS (buffer 2 m, água)',
+    hAxis: { title: 'Reflectância B4' },
+    vAxis: { title: 'CSS (mg/L)' },
+    trendlines: { 0: { showR2: true } },
+    pointSize: 5
+  });
+print(chart);
