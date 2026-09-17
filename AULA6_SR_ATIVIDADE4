@@ -1,0 +1,117 @@
+// Cor da água - Jéssica
+
+// >>> DEFINIR COLEÇÕES DE IMAGENS LANDSAT
+// DEFINIR PERÍODO INICIAL E FINAL
+var start_date = ee.Date.fromYMD(2015, 1, 1);
+var end_date = ee.Date.fromYMD(2021, 3, 31);
+
+// LANDSAT 8
+var col_landsat_8 = ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
+  .filterDate(start_date, end_date)
+  .select([1,2,3,4,5,6,7,10], ['BB','BG','BR','BNIR','BSWIR_1','BSWIR_2','BT','pixel_qa'])
+  .filterMetadata('CLOUD_COVER', 'less_than', 50)
+  .filterBounds(geometry);
+
+  
+//seleciona apenas duas imagens para fins de vizualizacao
+var img_mean_past = col_landsat_8.filter(ee.Filter.date('2015-10-01', '2015-10-31')).first();
+var img_mean_past2 = col_landsat_8.filter(ee.Filter.date('2020-10-01', '2020-10-31')).first();
+var img_mean_present = col_landsat_8.filter(ee.Filter.date('2021-03-01', '2021-03-31')).first();
+
+//composicao de bandas
+var vis_composition = {min: 0,max: 2000,bands: ['BR', 'BG', 'BB'],gamma: 1.5};
+
+//adiciona as duas imagens selecionadas ao mapa
+Map.addLayer(img_mean_past.clip(geometry), vis_composition, 'Landsat Guaiba Outubro 2015');
+Map.addLayer(img_mean_past2.clip(geometry), vis_composition, 'Landsat Guaiba Outubro 2020');
+Map.addLayer( img_mean_present.clip(geometry), vis_composition, 'Landsat Guaiba Março 2021');
+
+//Mascara de água
+var f_waterMask_L8 = function(image) {
+  var mask = image.select('pixel_qa').bitwiseAnd(4);
+  return image.updateMask(mask).addBands(image);};
+
+var col_landsat_8_WaterMask = col_landsat_8.map(f_waterMask_L8);
+Map.addLayer(col_landsat_8_WaterMask, vis_composition, 'Landsat Guaiba-Water Mask');
+
+//Determinacao da cor da água
+//DEFINING FUNCTION COORDENADAS CIE
+var color = function(image) {
+    var X = image.expression('((2.78689*RED)+(1.7517*GREEN)+(1.11302*(BLUE)))', {
+//        'RED': image.select('BR').divide(10000), 
+//        'GREEN': image.select('BG').divide(10000),
+//        'BLUE': image.select('BB').divide(10000), 
+        
+        'RED': image.select('BR').multiply(0.0000275).add(-0.2),
+        'GREEN': image.select('BG').multiply(0.0000275).add(-0.2),
+        'BLUE': image.select('BB').multiply(0.0000275).add(-0.2),
+        
+      }).rename('X');
+    var Y = image.expression('((1*RED)+(4.5907*GREEN)+(0.0601*(BLUE)))', {
+        'RED': image.select('BR').multiply(0.0000275).add(-0.2),
+        'GREEN': image.select('BG').multiply(0.0000275).add(-0.2),
+        'BLUE': image.select('BB').multiply(0.0000275).add(-0.2),
+      }).rename('Y');
+    var Z = image.expression('((0.0565*GREEN)+(5.5943*(BLUE)))', {
+        'RED': image.select('BR').multiply(0.0000275).add(-0.2),
+        'GREEN': image.select('BG').multiply(0.0000275).add(-0.2),
+        'BLUE': image.select('BB').multiply(0.0000275).add(-0.2),
+      }).rename('Z');
+
+return image.addBands([X,Y,Z]);
+}; 
+//DEFINING FUNCTION NORMALIZACAO
+var color2 = function(image) {
+    var x = image.expression('(A)/(A+B+C)', {
+         'A': image.select('X'),
+         'B': image.select('Y'),
+         'C': image.select('Z')
+      }).rename('x');
+    var y = image.expression('(B)/(A+B+C)', {
+         'A': image.select('X'),
+         'B': image.select('Y'),
+         'C': image.select('Z')
+      }).rename('y');
+    var z = image.expression('(C)/(A+B+C)', {
+         'A': image.select('X'),
+         'B': image.select('Y'),
+         'C': image.select('Z')
+      }).rename('z');
+
+return image.addBands([x,y,z]);
+}; 
+//DEFINING FUNCTION EIXO AUXILIAR 
+var color3 = function(image) {
+    var YshiftIMAGE = image.select('y'); 
+    var XshiftIMAGE = image.select('x'); 
+    var x2  = XshiftIMAGE.subtract(0.3333).rename('x2');
+    var y2  = YshiftIMAGE.subtract(0.3333).rename('y2');
+return image.addBands([x2,y2]);
+}; 
+//DEFINING FUNCTION HUE ANGLE
+var color4 = function(image) {
+    var YshiftIMAGE = image.select('y2'); 
+    var XshiftIMAGE = image.select('x2'); 
+    var AngleIMAGE  = (XshiftIMAGE.atan2(YshiftIMAGE)).multiply(ee.Number(180/3.141592)).rename('angle');
+return image.addBands([AngleIMAGE]);
+}; 
+
+//////////////////////////////////////////////////////////////
+//Applying function
+var color = col_landsat_8_WaterMask.map(color);
+var colorb = color.map(color2);
+var colorc = colorb.map(color3);
+var colord = colorc.map(color4);
+//////////////////////////////////////////////////////////////
+//Print results
+print(colord,'Hue Angle');
+var hue_angle = colord.select('angle')
+var palettes = require('users/gena/packages:palettes');
+var palette = palettes.misc.jet[7];
+// visualize annual concentration
+var sedColorVis2 = {
+  min: 0.0,
+  max: 150.0,
+  palette:palette,
+};
+Map.addLayer(hue_angle,sedColorVis2, 'Hue Angle');
