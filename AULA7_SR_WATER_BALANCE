@@ -1,0 +1,74 @@
+var area = ee.FeatureCollection('users/jessicaribeirofontoura/14_CAMELS_BR_catchment_boundaries_Morpara');
+Map.addLayer(area);
+// determina da amplitude da temporal da busca
+var year_start = 2001;
+var year_end = 2018;
+var month_start = 1;
+var month_end = 12;
+// defini datas
+var date_start = ee.Date.fromYMD(year_start, 1, 1);
+var date_end = ee.Date.fromYMD(year_end, 12, 31);
+var years = ee.List.sequence(year_start, year_end);// time range of years
+var months = ee.List.sequence(month_start, month_end);// time range of months
+
+//importa a colecao
+var dataset = ee.ImageCollection("NASA/GRACE/MASS_GRIDS/LAND")
+             .filterDate(date_start, date_end);
+//function to create table with extracted information 
+var function_table = function(dataset) {
+  var dateStr =  dataset.date();
+  var dateNum = ee.Number.parse(dateStr.format("YYYYMMdd"));
+ dataset =  dataset.addBands(ee.Image(dateNum).rename('date'));
+  return dataset.reduceRegions(area, ee.Reducer.mean());
+};
+//apllying function and creating featurecollection with data 
+var table = dataset.map(function_table).flatten();
+table = table.filter(ee.Filter.neq('tws', null)).select(['.*'],null,false);
+
+//export table to google drive
+Export.table.toDrive({
+  collection: table,
+  description: 'grace_time_series_M', 
+  fileFormat: 'CSV',
+  folder: 'serie_grace',
+});
+
+var gpm = ee.ImageCollection("NASA/GPM_L3/IMERG_MONTHLY_V06").select("precipitation").filterDate(date_start, date_end);
+//function to create table with extracted information 
+var function_table = function(dataset) {
+  var dateStr =  dataset.date();
+  var dateNum = ee.Number.parse(dateStr.format("YYYYMMdd"));
+ dataset =  dataset.addBands(ee.Image(dateNum).rename('date'));
+  return dataset.reduceRegions(area, ee.Reducer.mean());
+};
+//apllying function and creating featurecollection with data 
+var table = gpm.map(function_table).flatten();
+table = table.filter(ee.Filter.neq('tws', null)).select(['.*'],null,false);
+
+//export table to google drive
+Export.table.toDrive({
+  collection: table,
+  description: 'precipitation_time_series_M', 
+  fileFormat: 'CSV',
+  folder: 'serie_gpm',
+});
+
+var MOD16 = ee.ImageCollection("MODIS/006/MOD16A2").filterDate(date_start, date_end);
+//function to create table with extracted information 
+var function_table = function(dataset) {
+  var dateStr =  dataset.date();
+  var dateNum = ee.Number.parse(dateStr.format("YYYYMMdd"));
+ dataset =  dataset.addBands(ee.Image(dateNum).rename('date'));
+  return dataset.reduceRegions(area, ee.Reducer.mean());
+};
+//apllying function and creating featurecollection with data 
+var table = MOD16.map(function_table).flatten();
+table = table.filter(ee.Filter.neq('tws', null)).select(['.*'],null,false);
+
+//export table to google drive
+Export.table.toDrive({
+  collection: table,
+  description: 'evapotranspiration_time_series_M', 
+  fileFormat: 'CSV',
+  folder: 'serie_MOD16',
+});
