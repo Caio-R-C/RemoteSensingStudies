@@ -1,0 +1,77 @@
+// Visualizar dados GRACE
+
+// determina da amplitude da temporal da busca
+var year_start = 2001;
+var year_end = 2026;
+var month_start = 1;
+var month_end = 12;
+// defini datas
+var date_start = ee.Date.fromYMD(year_start, 1, 1);
+var date_end = ee.Date.fromYMD(year_end, 12, 31);
+var years = ee.List.sequence(year_start, year_end);// time range of years
+var months = ee.List.sequence(month_start, month_end);// time range of months
+
+//importa a colecao
+var dataGRACE = ee.ImageCollection("NASA/GRACE/MASS_GRIDS_V04/LAND")
+             .filterDate(date_start, date_end);
+
+//seleciona os produtos individualmente           
+var equivalentWaterThicknessCsr = dataGRACE.select('lwe_thickness_csr');
+var equivalentWaterThicknessGfz = dataGRACE.select('lwe_thickness_gfz');
+var equivalentWaterThicknessJpl = dataGRACE.select('lwe_thickness_jpl');
+
+
+var data_1 = equivalentWaterThicknessJpl.filterDate("2016-12-01","2016-12-31");
+var palettes = require('users/gena/packages:palettes');
+var palette = palettes.kovesi.rainbow_bgyr_35_85_c72[7];
+var parVis = {
+  min: -0.4,
+  max: 0.4,
+  palette: palette,
+};
+Map.addLayer(data_1, parVis,'Out 2023 GRACE');
+
+
+/* ----------------------------------------------------------------------------------
+--------------------------------CRIAÇÃO DE GIF-------------------------------------*/
+
+//criação de imagem para background
+
+// Seleciona base de dados SRTM global de 30 metros
+var srtm = ee.Image('USGS/SRTMGL1_003');
+
+var south_america = ee.FeatureCollection('USDOS/LSIB_SIMPLE/2017')
+  .filter(ee.Filter.eq('wld_rgn', 'South America'));
+  srtm = srtm.clipToCollection(south_america);
+
+// Define os parametros de visualizacao dos dados
+var SRTMpar = {
+min: 0,
+max: 3500,
+palette: ['White', 'Brown', 'Black']
+};
+
+var dataset_gif = equivalentWaterThicknessJpl
+
+var GPM_precip_gif  = ee.ImageCollection(dataset_gif).select('lwe_thickness_jpl')
+.map(function(image){return image.clip(geometry)});
+
+var srtmVis = srtm.visualize(SRTMpar);
+
+// criar visualização do gif
+var gifVis = GPM_precip_gif.map(function(img) {
+  return srtmVis
+        .paint(south_america, 'something', 1)
+        .blend(img.visualize(parVis));
+});
+// definir parâmetros para animação
+var gifParams = {
+  'region': geometry,
+  'dimensions': 400,
+  'crs': 'EPSG:3857',
+  'framesPerSecond': 10,
+  'format': 'gif'
+};
+
+print(gifVis.getVideoThumbURL(gifParams));
+print(ui.Thumbnail(gifVis, gifParams));
