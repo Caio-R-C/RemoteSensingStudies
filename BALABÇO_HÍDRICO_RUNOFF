@@ -1,109 +1,115 @@
 // =============================================================================
-// SCRIPT: CHUVA MENSAL + ESCOAMENTO (mm/mês) EM BACIA A PARTIR DE SHAPEFILE
-// Para estudos de balanço hídrico
+// SCRIPT CORRIGIDO: CHUVA MENSAL + ESCOAMENTO (mm/mês) EM BACIA
 // =============================================================================
 
 // ------------------------- 1. BACIA (SHAPEFILE) -------------------------
-// Substitua pelo caminho do seu Asset (após fazer upload do shapefile)
-var bacia = ee.FeatureCollection("users/SEU_USUARIO/nome_do_seu_shapefile").geometry();
+// Substitua pelo caminho do seu Asset
+var bacia = ee.FeatureCollection('users/crconst/SAO_FRANCISCO_CAMELS').geometry();
 
-// Caso queira testar rapidamente com um retângulo (apague depois):
+// Para teste rápido (apague depois):
 // var bacia = ee.Geometry.Rectangle([-51.5, -30.5, -50.5, -29.5]);
 
 Map.centerObject(bacia, 9);
 Map.addLayer(bacia, {color: 'red'}, 'Bacia');
 
 // ------------------------- 2. PERÍODO -------------------------
-var startDate = '2015-01-01';
-var endDate   = '2020-12-31';   // TRMM só vai até ~2019
+var startDate = '2002-01-01';
+var endDate   = '2019-12-31';   // TRMM só vai até 2019
 
 // ------------------------- 3. COLEÇÕES -------------------------
-// GPM (mm/h → 30 min)
 var gpm = ee.ImageCollection('NASA/GPM_L3/IMERG_V07')
   .select('precipitation')
   .filterDate(startDate, endDate)
   .filterBounds(bacia);
 
-// CHIRPS (mm/dia)
 var chirps = ee.ImageCollection('UCSB-CHG/CHIRPS/DAILY')
   .filterDate(startDate, endDate)
   .filterBounds(bacia);
 
-// TRMM 3B42 (mm/h → 3 horas) - disponível até final de 2019
 var trmm = ee.ImageCollection('TRMM/3B42')
   .select('precipitation')
   .filterDate(startDate, endDate)
   .filterBounds(bacia);
 
-// ERA5-Land - Runoff (já em metros de água → converter para mm)
+// ERA5-Land mensal (runoff)
 var era5 = ee.ImageCollection('ECMWF/ERA5_LAND/MONTHLY_AGGR')
-  .select('runoff_sum')          // acumula o runoff do mês
+  .select('runoff_sum')
   .filterDate(startDate, endDate)
   .filterBounds(bacia);
 
-// ------------------------- 4. FUNÇÃO DE AGREGAÇÃO MENSAL -------------------------
-function monthlyRainfall(collection, scaleFactor, bandName) {
-  return ee.ImageCollection.fromImages(
-    ee.List.sequence(0, ee.Date(endDate).difference(ee.Date(startDate), 'month').subtract(1))
-      .map(function(m) {
-        var start = ee.Date(startDate).advance(m, 'month');
-        var end   = start.advance(1, 'month');
-        
-        return collection
-          .filterDate(start, end)
-          .sum()
-          .multiply(scaleFactor)
-          .rename(bandName)
-          .set('system:time_start', start.millis())
-          .set('month', start.format('YYYY-MM'));
-      })
-  );
+// ------------------------- 4. FUNÇÃO SEGURA PARA MENSAL -------------------------
+function makeMonthly(collection, scaleFactor, bandName) {
+  var start = ee.Date(startDate);
+  var end   = ee.Date(endDate);
+  var nMonths = end.difference(start, 'month');
+
+  var months = ee.List.sequence(0, nMonths.subtract(1));
+
+  var monthlyImages = months.map(function(m) {
+    m = ee.Number(m);
+    var startM = start.advance(m, 'month');
+    var endM   = startM.advance(1, 'month');
+
+    var filtered = collection.filterDate(startM, endM);
+
+    // Se não houver imagens, cria uma imagem com valor 0
+    var monthly = ee.Algorithms.If(
+      filtered.size().gt(0),
+      filtered.sum().multiply(scaleFactor).rename(bandName),
+      ee.Image.constant(0).rename(bandName).selfMask()
+    );
+
+    return ee.Image(monthly)
+      .set('system:time_start', startM.millis())
+      .set('month', startM.format('YYYY-MM'));
+  });
+
+  return ee.ImageCollection.fromImages(monthlyImages);
 }
 
-// Aplicando
-var gpmMonthly    = monthlyRainfall(gpm, 0.5, 'GPM_mm');      // 30 min
-var chirpsMonthly = monthlyRainfall(chirps, 1, 'CHIRPS_mm');   // mm/dia
-var trmmMonthly   = monthlyRainfall(trmm, 3, 'TRMM_mm');       // 3 horas
+// Aplicando a função
+var gpmMonthly    = makeMonthly(gpm, 0.5, 'GPM_mm');
+var chirpsMonthly = makeMonthly(chirps, 1, 'CHIRPS_mm');
+var trmmMonthly   = makeMonthly(trmm, 3, 'TRMM_mm');
 
-// ERA5-Land já é mensal → só converter de metros para mm
+// ERA5 já é mensal → só converter m → mm
 var runoffMonthly = era5.map(function(img) {
-  return img.multiply(1000).rename('Runoff_mm')   // m → mm
+  return img.multiply(1000).rename('Runoff_mm')
     .copyProperties(img, ['system:time_start'])
     .set('month', ee.Date(img.get('system:time_start')).format('YYYY-MM'));
 });
 
-// ------------------------- 5. EXTRAIR VALORES MÉDIOS NA BACIA -------------------------
-function extractMean(image) {
-  var stats = image.reduceRegion({
+// ------------------------- 5. EXTRAIR VALORES NA BACIA -------------------------
+function extractMean(img) {
+  var mean = img.reduceRegion({
     reducer: ee.Reducer.mean(),
     geometry: bacia,
-    scale: 10000,        // 10 km (adequado para ERA5 e os produtos de chuva)
+    scale: 10000,
     maxPixels: 1e13
   });
-  return image.set(stats);
+  return img.set(mean);
 }
 
-var gpmStats     = gpmMonthly.map(extractMean);
-var chirpsStats  = chirpsMonthly.map(extractMean);
-var trmmStats    = trmmMonthly.map(extractMean);
-var runoffStats  = runoffMonthly.map(extractMean);
+var gpmStats    = gpmMonthly.map(extractMean);
+var chirpsStats = chirpsMonthly.map(extractMean);
+var trmmStats   = trmmMonthly.map(extractMean);
+var runoffStats = runoffMonthly.map(extractMean);
 
 // ------------------------- 6. TABELAS -------------------------
-function toTable(collection, valueName) {
+function toTable(collection, band) {
   return collection.map(function(img) {
     return ee.Feature(null, {
-      'date': img.get('month'),
-      'value': img.get(valueName)
+      date: img.get('month'),
+      value: img.get(band)
     });
   });
 }
 
-var gpmTable     = toTable(gpmStats, 'GPM_mm');
-var chirpsTable  = toTable(chirpsStats, 'CHIRPS_mm');
-var trmmTable    = toTable(trmmStats, 'TRMM_mm');
-var runoffTable  = toTable(runoffStats, 'Runoff_mm');
+var gpmTable    = toTable(gpmStats, 'GPM_mm');
+var chirpsTable = toTable(chirpsStats, 'CHIRPS_mm');
+var trmmTable   = toTable(trmmStats, 'TRMM_mm');
+var runoffTable = toTable(runoffStats, 'Runoff_mm');
 
-// Imprime no console
 print('=== Chuva mensal GPM (mm) ===', gpmTable);
 print('=== Chuva mensal CHIRPS (mm) ===', chirpsTable);
 print('=== Chuva mensal TRMM (mm) ===', trmmTable);
@@ -124,7 +130,7 @@ print(ui.Chart.feature.byFeature(trmmTable, 'date', 'value')
 
 print(ui.Chart.feature.byFeature(runoffTable, 'date', 'value')
   .setChartType('ColumnChart')
-  .setOptions({title: 'Escoamento mensal - ERA5-Land (mm)', vAxis: {title: 'mm'}, legend: {position: 'none'}}));
+  .setOptions({title: 'Escoamento mensal ERA5-Land (mm)', vAxis: {title: 'mm'}, legend: {position: 'none'}}));
 
 // ------------------------- 8. EXPORTAR (opcional) -------------------------
 /*
@@ -133,12 +139,3 @@ Export.table.toDrive({collection: chirpsTable, description: 'chuva_CHIRPS_mm', f
 Export.table.toDrive({collection: trmmTable, description: 'chuva_TRMM_mm', fileFormat: 'CSV'});
 Export.table.toDrive({collection: runoffTable, description: 'escoamento_ERA5_mm', fileFormat: 'CSV'});
 */
-
-// ------------------------- 9. OBSERVAÇÕES -------------------------
-print('-------------------------------------------------------------');
-print('OBSERVAÇÕES IMPORTANTES:');
-print('1. Substitua o caminho do Asset pelo seu shapefile da bacia.');
-print('2. O escoamento (Runoff_mm) vem do ERA5-Land e já está em mm/mês.');
-print('3. Use esses valores de Q (mm/mês) junto com a chuva para balanço hídrico.');
-print('4. TRMM só possui dados até dezembro/2019.');
-print('-------------------------------------------------------------');
