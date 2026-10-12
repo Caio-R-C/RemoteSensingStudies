@@ -1,0 +1,232 @@
+// =============================================================================
+// GEE – Extração mensal de Precipitação, ET e GRACE (TWSA) na bacia
+// =============================================================================
+// Uso:
+// 1. Configure a seção CONFIG abaixo (bacia, período, produtos)
+// 2. Rode o script
+// 3. Na aba Tasks, inicie os exports para o Google Drive
+// 4. Use os CSVs no Jupyter Notebook de análise
+// =============================================================================
+
+// ========================= CONFIG (ALTERE AQUI) ==============================
+
+// --- Geometria da bacia ---
+// Opção A: retângulo de exemplo (troque pelas coordenadas da sua bacia)
+//var bacia = ee.Geometry.Rectangle([-51.5, -30.5, -50.5, -29.5]);
+
+// Opção B: Asset de FeatureCollection (descomente e ajuste o caminho)
+// var fc = ee.FeatureCollection('users/seu_usuario/sua_bacia');
+// var bacia = fc.geometry();   // ou fc.filter(...).geometry()
+
+// --- Período de análise ---
+// GRACE começa ~2002; MOD16 ~2001; CHIRPS ~1981; GPM ~2000
+var startDate = '2003-01-01';
+var endDate   = '2023-12-31';
+
+// --- Escala de redução espacial (m) ---
+// CHIRPS ~5000, MOD16 ~500, GRACE mascon é grosseiro (~50000+)
+var scaleP   = 5000;
+var scaleET  = 500;
+var scaleGRACE = 25000;
+
+// --- Nome base dos arquivos de exportação ---
+var prefixoExport = 'bacia_exemplo';   // troque pelo nome/ID da bacia
+
+// ========================= FIM DO CONFIG =====================================
+
+Map.centerObject(bacia, 8);
+Map.addLayer(bacia, {color: 'red'}, 'Bacia');
+
+// -----------------------------------------------------------------------------
+// 1. PRECIPITAÇÃO
+// -----------------------------------------------------------------------------
+// Recomendações para Brasil:
+//   • CHIRPS  → bom em escala mensal/anual, resolução 0.05°
+//   • GPM IMERG V07 → boa resolução temporal
+//   • (CAMELS-BR também tem MSWEP, CPC, BR-DWGD – use no Jupyter)
+
+var chirps = ee.ImageCollection('UCSB-CHG/CHIRPS/DAILY')
+  .filterDate(startDate, endDate)
+  .filterBounds(bacia)
+  .select('precipitation');
+
+var gpm = ee.ImageCollection('NASA/GPM_L3/IMERG_V07')
+  .filterDate(startDate, endDate)
+  .filterBounds(bacia)
+  .select('precipitation');
+
+// Função: soma mensal de precipitação (mm/mês)
+function monthlyPrecip(collection, scaleFactor, bandName) {
+  // scaleFactor: CHIRPS = 1 (já mm/dia); GPM = 0.5 (mm/h → mm em 30 min)
+  var start = ee.Date(startDate);
+  var end   = ee.Date(endDate);
+  var nMonths = end.difference(start, 'month');
+
+  return ee.ImageCollection(
+    ee.List.sequence(0, nMonths.subtract(1)).map(function(m) {
+      var s = start.advance(m, 'month');
+      var e = s.advance(1, 'month');
+      return collection
+        .filterDate(s, e)
+        .sum()
+        .multiply(scaleFactor)
+        .rename(bandName)
+        .set('system:time_start', s.millis())
+        .set('month', s.format('YYYY-MM'));
+    })
+  );
+}
+
+var chirpsMonthly = monthlyPrecip(chirps, 1, 'P_CHIRPS_mm');
+var gpmMonthly    = monthlyPrecip(gpm, 0.5, 'P_GPM_mm');
+
+// -----------------------------------------------------------------------------
+// 2. EVAPOTRANSPIRAÇÃO (MOD16)
+// -----------------------------------------------------------------------------
+// MOD16A2: 8 dias, banda ET em kg/m²/8day com scale 0.1 → mm
+// Coleção 061 (mais recente). Se o período for antigo, teste também:
+//   'MODIS/006/MOD16A2'
+
+var mod16 = ee.ImageCollection('MODIS/061/MOD16A2')
+  .filterDate(startDate, endDate)
+  .filterBounds(bacia)
+  .select('ET');
+
+// Soma mensal de ET (converte scale 0.1 e agrega os compostos de 8 dias)
+function monthlyET(collection, bandName) {
+  var start = ee.Date(startDate);
+  var end   = ee.Date(endDate);
+  var nMonths = end.difference(start, 'month');
+
+  return ee.ImageCollection(
+    ee.List.sequence(0, nMonths.subtract(1)).map(function(m) {
+      var s = start.advance(m, 'month');
+      var e = s.advance(1, 'month');
+      // ET já é soma do período de 8 dias; multiplica pelo scale 0.1
+      var monthly = collection
+        .filterDate(s, e)
+        .sum()
+        .multiply(0.1)   // scale factor oficial
+        .rename(bandName)
+        .set('system:time_start', s.millis())
+        .set('month', s.format('YYYY-MM'));
+      return monthly;
+    })
+  );
+}
+
+var etMonthly = monthlyET(mod16, 'ET_MOD16_mm');
+
+// -----------------------------------------------------------------------------
+// 3. GRACE / GRACE-FO (TWSA – anomalia de armazenamento)
+// -----------------------------------------------------------------------------
+// Mascon JPL: lwe_thickness em cm (equivalent water thickness)
+// Convertido para mm para ficar consistente com P e ET
+
+var grace = ee.ImageCollection('NASA/GRACE/MASS_GRIDS_V04/MASCON')
+  .filterDate(startDate, endDate)
+  .filterBounds(bacia)
+  .select('lwe_thickness');
+
+// GRACE já é mensal – apenas padroniza e converte cm → mm
+var graceMonthly = grace.map(function(img) {
+  var date = ee.Date(img.get('system:time_start'));
+  return img
+    .multiply(10)   // cm → mm
+    .rename('TWSA_GRACE_mm')
+    .set('system:time_start', date.millis())
+    .set('month', date.format('YYYY-MM'));
+});
+
+// -----------------------------------------------------------------------------
+// 4. Extrair média espacial na bacia
+// -----------------------------------------------------------------------------
+function extractMean(image, scale) {
+  var stats = image.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: bacia,
+    scale: scale,
+    maxPixels: 1e13,
+    bestEffort: true
+  });
+  return image.set(stats);
+}
+
+var chirpsStats = chirpsMonthly.map(function(img) {
+  return extractMean(img, scaleP);
+});
+var gpmStats = gpmMonthly.map(function(img) {
+  return extractMean(img, scaleP);
+});
+var etStats = etMonthly.map(function(img) {
+  return extractMean(img, scaleET);
+});
+var graceStats = graceMonthly.map(function(img) {
+  return extractMean(img, scaleGRACE);
+});
+
+// -----------------------------------------------------------------------------
+// 5. Converter para FeatureCollection (tabela)
+// -----------------------------------------------------------------------------
+function toTable(collection, valueProperty) {
+  return collection.map(function(img) {
+    return ee.Feature(null, {
+      'month': img.get('month'),
+      'value': img.get(valueProperty)
+    });
+  });
+}
+
+var tableCHIRPS = toTable(chirpsStats, 'P_CHIRPS_mm');
+var tableGPM    = toTable(gpmStats, 'P_GPM_mm');
+var tableET     = toTable(etStats, 'ET_MOD16_mm');
+var tableGRACE  = toTable(graceStats, 'TWSA_GRACE_mm');
+
+// -----------------------------------------------------------------------------
+// 6. Gráficos rápidos no console (opcional)
+// -----------------------------------------------------------------------------
+print(ui.Chart.feature.byFeature(tableCHIRPS, 'month', 'value')
+  .setChartType('ColumnChart')
+  .setOptions({title: 'Precipitação mensal CHIRPS (mm)', legend: {position: 'none'}}));
+
+print(ui.Chart.feature.byFeature(tableET, 'month', 'value')
+  .setChartType('ColumnChart')
+  .setOptions({title: 'ET mensal MOD16 (mm)', legend: {position: 'none'}}));
+
+print(ui.Chart.feature.byFeature(tableGRACE, 'month', 'value')
+  .setChartType('LineChart')
+  .setOptions({title: 'TWSA GRACE (mm)', legend: {position: 'none'}}));
+
+// -----------------------------------------------------------------------------
+// 7. Exportar para o Google Drive
+// -----------------------------------------------------------------------------
+Export.table.toDrive({
+  collection: tableCHIRPS,
+  description: prefixoExport + '_P_CHIRPS_mensal',
+  fileNamePrefix: prefixoExport + '_P_CHIRPS_mensal',
+  fileFormat: 'CSV'
+});
+
+Export.table.toDrive({
+  collection: tableGPM,
+  description: prefixoExport + '_P_GPM_mensal',
+  fileNamePrefix: prefixoExport + '_P_GPM_mensal',
+  fileFormat: 'CSV'
+});
+
+Export.table.toDrive({
+  collection: tableET,
+  description: prefixoExport + '_ET_MOD16_mensal',
+  fileNamePrefix: prefixoExport + '_ET_MOD16_mensal',
+  fileFormat: 'CSV'
+});
+
+Export.table.toDrive({
+  collection: tableGRACE,
+  description: prefixoExport + '_TWSA_GRACE_mensal',
+  fileNamePrefix: prefixoExport + '_TWSA_GRACE_mensal',
+  fileFormat: 'CSV'
+});
+
+print('>>> Script pronto. Vá em Tasks e inicie os 4 exports.');
+print('>>> Depois use os CSVs no Jupyter Notebook de análise.');
