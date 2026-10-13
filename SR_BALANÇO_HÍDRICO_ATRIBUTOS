@@ -87,7 +87,7 @@ var gpmMonthly    = monthlyPrecip(gpm, 0.5, 'P_GPM_mm');
 // Coleção 061 (mais recente). Se o período for antigo, teste também:
 //   'MODIS/006/MOD16A2'
 
-var mod16 = ee.ImageCollection('MODIS/061/MOD16A2')
+var mod16 = ee.ImageCollection('MODIS/061/MOD16A2GF')
   .filterDate(startDate, endDate)
   .filterBounds(bacia)
   .select('ET');
