@@ -15,7 +15,7 @@
 //var bacia = ee.Geometry.Rectangle([-51.5, -30.5, -50.5, -29.5]);
 
 // Opção B: Asset de FeatureCollection (descomente e ajuste o caminho)
-// var fc = ee.FeatureCollection('users/seu_usuario/sua_bacia');
+// var bacia = ee.FeatureCollection('users/seu_usuario/sua_bacia');
 // var bacia = fc.geometry();   // ou fc.filter(...).geometry()
 
 // --- Período de análise ---
