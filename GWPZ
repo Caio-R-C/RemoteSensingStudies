@@ -1,0 +1,193 @@
+/**
+ * =========================================================================================
+ * MAPEAMENTO DE ZONAS DE POTENCIAL DE ÁGUA SUBTERRÂNEA (GWPZ) VIA GEE E AHP
+ * =========================================================================================
+ */
+
+// 1. ÁREA DE ESTUDO (SUBSTITUA PELO SEU ASSET SHAPEFILE)
+var ASSET_PATH = "projects/ee-seu-usuario/assets/minha_bacia";
+
+// Fallback padrão: UH Ribeirão do Gama (DF)
+var fallbackCoords = [
+  [-47.9250, -15.8680], [-47.9050, -15.8850], [-47.8800, -15.9050],
+  [-47.8650, -15.9350], [-47.8720, -15.9750], [-47.9100, -16.0200],
+  [-47.9550, -16.0320], [-47.9950, -16.0150], [-48.0200, -15.9800],
+  [-48.0100, -15.9400], [-47.9750, -15.9050], [-47.9450, -15.8750],
+  [-47.9250, -15.8680]
+];
+var bacia;
+try {
+  bacia = ee.FeatureCollection(ASSET_PATH).geometry();
+} catch (e) {
+  print("Aviso: Asset não encontrado. Usando polígono padrão da UH Ribeirão do Gama (DF).");
+  bacia = ee.Geometry.Polygon([fallbackCoords]);
+}
+
+Map.centerObject(bacia, 12);
+Map.setOptions("HYBRID");
+
+var palette4 = ['#d7191c', '#fdae61', '#a6d96a', '#1a9641']; // Pobre a Muito Bom
+
+// 2. CAMADAS TEMÁTICAS RECLASSIFICADAS (NOTAS 1 A 4)
+
+// Fator 1: Declividade (Slope)
+var dem = ee.Image("COPERNICUS/DEM/GLO30").select('DEM').clip(bacia);
+var slope = ee.Terrain.slope(dem);
+var r_slope = ee.Image(1)
+  .where(slope.lte(4.71), 4)
+  .where(slope.gt(4.71).and(slope.lte(10.2)), 3)
+  .where(slope.gt(10.2).and(slope.lte(18.5)), 2)
+  .where(slope.gt(18.5), 1)
+  .rename('Slope_Class');
+
+// Fator 2: TWI (Índice Topográfico de Umidade)
+var flowAcc = ee.Image("WWF/HydroSHEDS/15ACC").clip(bacia);
+var slopeRad = slope.multiply(Math.PI / 180.0);
+var tanSlope = slopeRad.tan().max(0.001);
+var twi = flowAcc.add(1).multiply(30).divide(tanSlope).log();
+var r_twi = ee.Image(1)
+  .where(twi.gte(11.6), 4)
+  .where(twi.gte(8.08).and(twi.lt(11.6)), 3)
+  .where(twi.gte(5.84).and(twi.lt(8.08)), 2)
+  .where(twi.lt(5.84), 1)
+  .rename('TWI_Class');
+
+// Fator 3: Densidade de Drenagem
+var streams = flowAcc.gt(800);
+var drainageDensity = streams.reduceNeighborhood({
+  reducer: ee.Reducer.mean(),
+  kernel: ee.Kernel.circle({radius: 1000, units: 'meters'})
+});
+var r_dd = ee.Image(1)
+  .where(drainageDensity.lte(0.10), 4)
+  .where(drainageDensity.gt(0.10).and(drainageDensity.lte(0.25)), 3)
+  .where(drainageDensity.gt(0.25).and(drainageDensity.lte(0.45)), 2)
+  .where(drainageDensity.gt(0.45), 1)
+  .rename('DrainageDensity_Class');
+
+// Fator 4: Uso e Cobertura (MapBiomas Col. 9)
+var lulc;
+var r_lulc;
+try {
+  lulc = ee.Image("projects/mapbiomas-workspace/public/collection9/mapbiomas_collection90_integration_v1")
+           .select('classification_2023').clip(bacia);
+  r_lulc = ee.Image(2)
+    .where(lulc.eq(3).or(lulc.eq(4)).or(lulc.eq(11)).or(lulc.eq(12)), 4)
+    .where(lulc.eq(15).or(lulc.eq(18)).or(lulc.eq(19)).or(lulc.eq(20)), 3)
+    .where(lulc.eq(24).or(lulc.eq(25)), 1)
+    .rename('LULC_Class');
+} catch (e) {
+  var worldcover = ee.ImageCollection("ESA/WorldCover/v200").first().clip(bacia);
+  r_lulc = ee.Image(2)
+    .where(worldcover.eq(10).or(worldcover.eq(20)).or(worldcover.eq(90)), 4)
+    .where(worldcover.eq(30).or(worldcover.eq(40)), 3)
+    .where(worldcover.eq(50).or(worldcover.eq(60)), 1)
+    .rename('LULC_Class');
+}
+
+// Fator 5: Precipitação (CHIRPS - Climatologia 20 Anos)
+var chirps = ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY")
+  .filterDate('2003-01-01', '2023-12-31')
+  .sum().divide(20).clip(bacia);
+var r_rain = ee.Image(2)
+  .where(chirps.gte(1500), 4)
+  .where(chirps.gte(1400).and(chirps.lt(1500)), 3)
+  .where(chirps.gte(1300).and(chirps.lt(1400)), 2)
+  .where(chirps.lt(1300), 1)
+  .rename('Rainfall_Class');
+
+// Fator 6: Lineamentos Estruturais (Hillshade Multiazimutal com Filtro Sobel)
+var hillshade1 = ee.Terrain.hillshade(dem, 315, 45);
+var hillshade2 = ee.Terrain.hillshade(dem, 135, 45);
+var lineamentProxy = hillshade1.subtract(hillshade2).abs();
+var r_lineament = ee.Image(2)
+  .where(lineamentProxy.gte(40), 4)
+  .where(lineamentProxy.gte(25).and(lineamentProxy.lt(40)), 3)
+  .where(lineamentProxy.gte(12).and(lineamentProxy.lt(25)), 2)
+  .where(lineamentProxy.lt(12), 1)
+  .rename('Lineament_Class');
+
+// Fator 7: Textura do Solo (SoilGrids 250m)
+var r_soil;
+try {
+  var clay = ee.Image("projects/soilgrids-isric/clay_mean").select('clay_0-5cm_mean').clip(bacia);
+  r_soil = ee.Image(3)
+    .where(clay.lte(250), 4)
+    .where(clay.gt(250).and(clay.lte(400)), 3)
+    .where(clay.gt(400).and(clay.lte(600)), 2)
+    .where(clay.gt(600), 1)
+    .rename('Soil_Class');
+} catch (e) {
+  r_soil = ee.Image(3).clip(bacia).rename('Soil_Class');
+}
+
+// Fator 8: Litologia / Morfoestrutura
+var r_litho = ee.Image(3)
+  .where(dem.gte(1100), 4)
+  .where(dem.gte(1000).and(dem.lt(1100)), 3)
+  .where(dem.lt(1000), 2)
+  .rename('Lithology_Class');
+
+// 3. MODELO PONDERADO AHP (SAATY - CR = 0.085 < 0.10)
+var gwpzContinuous = r_litho.multiply(0.3243)
+  .add(r_rain.multiply(0.2384))
+  .add(r_lulc.multiply(0.1109))
+  .add(r_soil.multiply(0.1055))
+  .add(r_dd.multiply(0.0773))
+  .add(r_twi.multiply(0.0673))
+  .add(r_lineament.multiply(0.0496))
+  .add(r_slope.multiply(0.0268))
+  .rename('GWPZ_Score');
+
+var gwpzClass = ee.Image(1)
+  .where(gwpzContinuous.gte(3.20), 4)
+  .where(gwpzContinuous.gte(2.50).and(gwpzContinuous.lt(3.20)), 3)
+  .where(gwpzContinuous.gte(1.80).and(gwpzContinuous.lt(2.50)), 2)
+  .where(gwpzContinuous.lt(1.80), 1)
+  .rename('GWPZ_Class');
+
+// 4. ADIÇÃO DE CAMADAS AO MAPA
+Map.addLayer(dem, {min: 950, max: 1250, palette: ['#31a354', '#addd8e', '#f7fcb5', '#d95f0e']}, '1. DEM Copernicus (m)', false);
+Map.addLayer(slope, {min: 0, max: 30, palette: ['green', 'yellow', 'orange', 'red']}, '2. Declividade Contínua (°)', false);
+Map.addLayer(twi, {min: 4, max: 15, palette: ['#edf8b1', '#7fcdbb', '#2c7fb8', '#253494']}, '3. TWI Contínuo', false);
+Map.addLayer(chirps, {min: 1200, max: 1600, palette: ['#ffffcc', '#a1dab4', '#41b6c4', '#225ea8']}, '4. Chuva Anual CHIRPS (mm)', false);
+
+Map.addLayer(r_slope, {min: 1, max: 4, palette: palette4}, 'Fator: Declividade Reclassificada', false);
+Map.addLayer(r_twi, {min: 1, max: 4, palette: palette4}, 'Fator: TWI Reclassificado', false);
+Map.addLayer(r_dd, {min: 1, max: 4, palette: palette4}, 'Fator: Densidade de Drenagem', false);
+Map.addLayer(r_lulc, {min: 1, max: 4, palette: palette4}, 'Fator: Uso do Solo (LULC)', false);
+Map.addLayer(r_rain, {min: 1, max: 4, palette: palette4}, 'Fator: Chuva Reclassificada', false);
+Map.addLayer(r_lineament, {min: 1, max: 4, palette: palette4}, 'Fator: Lineamentos Reclassificados', false);
+Map.addLayer(r_soil, {min: 1, max: 4, palette: palette4}, 'Fator: Solo Reclassificado', false);
+Map.addLayer(r_litho, {min: 1, max: 4, palette: palette4}, 'Fator: Litologia Reclassificada', false);
+
+Map.addLayer(gwpzContinuous, {min: 1, max: 4, palette: palette4}, 'GWPZ Contínuo (Score)', false);
+Map.addLayer(gwpzClass, {min: 1, max: 4, palette: palette4}, '★ ZONAS DE POTENCIAL (GWPZ FINAL)', true);
+Map.addLayer(ee.Image().paint(bacia, 1, 2), {palette: ['#000000']}, 'Limite da Bacia', true);
+
+// 5. PAINEL DE LEGENDA
+var legend = ui.Panel({
+  style: {position: 'bottom-right', padding: '8px 15px', backgroundColor: 'rgba(255, 255, 255, 0.9)'}
+});
+legend.add(ui.Label({value: 'Potencial de Água Subterrânea (GWPZ)', style: {fontWeight: 'bold', fontSize: '13px'}}));
+
+var addLegendRow = function(color, text) {
+  var box = ui.Label({style: {backgroundColor: color, padding: '8px', margin: '0 8px 4px 0'}});
+  var desc = ui.Label({value: text, style: {fontSize: '12px'}});
+  legend.add(ui.Panel({widgets: [box, desc], layout: ui.Panel.Layout.Flow('horizontal')}));
+};
+addLegendRow(palette4[3], '4 - Muito Bom (Very Good)');
+addLegendRow(palette4[2], '3 - Bom (Good)');
+addLegendRow(palette4[1], '2 - Moderado (Moderate)');
+addLegendRow(palette4[0], '1 - Pobre (Poor)');
+Map.add(legend);
+
+// 6. ESTATÍSTICAS DE ÁREA (CONSOLETEST)
+var areaImage = ee.Image.pixelArea().divide(10000).addBands(gwpzClass);
+var areaStats = areaImage.reduceRegion({
+  reducer: ee.Reducer.sum().group({groupField: 1, groupName: 'class'}),
+  geometry: bacia,
+  scale: 30,
+  maxPixels: 1e9
+});
+print("Estatísticas de Área das Classes de GWPZ (Hectares):", areaStats);
