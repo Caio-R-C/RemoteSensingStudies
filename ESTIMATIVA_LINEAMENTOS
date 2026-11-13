@@ -1,0 +1,83 @@
+// ============ 1. Área de estudo e imagem de entrada ============
+var roi = ee.FeatureCollection('INSIRA_O_ID_DO_SEU_ASSET_AQUI');
+
+// Usar DEM SRTM como entrada (ou trocar para um image asset do Sentinel-1)
+var dem = ee.Image('USGS/SRTMGL1_003').clip(roi);
+
+// Para destacar estruturas lineares, primeiro calcular o hillshade
+var hillshade = ee.Terrain.hillshade(dem);
+
+// ============ 2. Detecção de bordas Canny ============
+// O threshold controla o gradiente mínimo, sigma controla a suavização gaussiana
+var canny = ee.Algorithms.CannyEdgeDetector({
+  image: hillshade,
+  threshold: 10,
+  sigma: 1
+});
+
+// ============ 3. Transformada de Hough (extrair segmentos de linha) ============
+// Parâmetros: imagem de entrada, tamanho do acumulador (256), threshold (600), tamanho do segmento (100)
+var hough = ee.Algorithms.HoughTransform(canny, 256, 600, 100);
+
+// O resultado da transformada de Hough é uma imagem binária, onde os pixels de linha têm valor 1
+// Visualização
+Map.centerObject(roi, 11);
+Map.addLayer(canny, {palette: ['black', 'white']}, 'Canny Edges');
+Map.addLayer(hough, {palette: ['black', 'red']}, 'Hough Lines');
+
+// ============ 4. Calcular densidade de lineamentos (aproximação por filtro de média) ============
+// Usar filtro de média para estimar a proporção de pixels de linha em uma vizinhança
+// O tamanho do kernel 15 significa uma janela de aproximadamente 15 pixels (dependendo da resolução do DEM)
+var kernelSize = 15;
+var density = hough.reduceNeighborhood({
+  reducer: ee.Reducer.mean(),
+  kernel: ee.Kernel.square(kernelSize),
+  inputWeight: 'kernel'
+});
+
+// Densidade (proporção) * fator de escala ≈ km/km²
+// Nota: O valor específico depende da resolução do DEM e do comprimento dos segmentos de linha, aqui apenas uma estimativa relativa
+// Para comparar com pyLEFA, sugere-se normalizar ambos ou usar a mesma unidade de área
+var densityKmKm2 = density.multiply(ee.Image.pixelArea().sqrt().divide(1000));
+
+// Mascarar para a bacia
+densityKmKm2 = densityKmKm2.updateMask(roi);
+
+Map.addLayer(densityKmKm2, {
+  min: 0, max: 1,
+  palette: ['blue', 'cyan', 'yellow', 'orange', 'red']
+}, 'Lineament Density');
+
+// ============ 5. Exportação ============
+// Opção A: Exportar raster (recomendado para comparação rápida)
+Export.image.toDrive({
+  image: densityKmKm2,
+  description: 'GEE_Lineament_Density_Raster',
+  folder: 'GEE_DF_Comparison',
+  fileNamePrefix: 'gee_lineament_density',
+  region: roi,
+  scale: 30,
+  crs: 'EPSG:31983',
+  maxPixels: 1e9,
+  fileFormat: 'GeoTIFF'
+});
+
+// Opção B: Exportar Shapefile (se precisar de edição manual posterior)
+// Nota: O resultado do HoughTransform é um raster, precisa ser convertido para vetor primeiro
+// O GEE não possui uma ferramenta direta de "raster para vetor" que possa ser exportada como Shapefile
+// Abaixo está uma solução alternativa: usar reduceToVectors para converter áreas com valor 1 em polígonos
+var houghVectors = hough.selfMask().reduceToVectors({
+  geometry: roi,
+  scale: 30,
+  geometryType: 'polygon',
+  eightConnected: false,
+  labelProperty: 'value'
+});
+
+// Exportar vetor (este passo geralmente não é recomendado, pois produz muitos polígonos fragmentados)
+// Export.table.toDrive({
+//   collection: houghVectors,
+//   description: 'GEE_Hough_Vectors',
+//   folder: 'GEE_DF_Comparison',
+//   fileFormat: 'SHP'
+// });
