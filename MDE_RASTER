@@ -1,0 +1,29 @@
+// Substitua pelo ID do seu asset da bacia
+var roi = ee.FeatureCollection('INSIRA_O_ID_DO_SEU_ASSET_AQUI');
+
+// --- Opção 1: Exportar uma imagem Landsat (ex: Landsat 9) ---
+var landsat = ee.ImageCollection('LANDSAT/LC09/C02/T1_L2')
+    .filterDate('2023-01-01', '2023-12-31')
+    .filterBounds(roi)
+    .filter(ee.Filter.lt('CLOUD_COVER', 10)) // Filtrar nuvens
+    .first()
+    .clip(roi);
+
+// Selecione uma banda (ex: banda pancromática ou infravermelho) que realce lineamentos
+var banda = landsat.select('SR_B8'); // Banda pancromática (15m) ou outra de sua escolha
+
+// --- Opção 2: Exportar SRTM (MDE) ---
+var srtm = ee.Image('USGS/SRTMGL1_003').clip(roi);
+
+// --- Exportar a imagem escolhida para o Google Drive ---
+Export.image.toDrive({
+  image: banda, // ou 'srtm'
+  description: 'Imagem_para_pyLEFA',
+  folder: 'GEE_pyLEFA',
+  fileNamePrefix: 'landsat_band8_df',
+  region: roi,
+  scale: 15, // 15m para Landsat Pan, 30m para SRTM
+  crs: 'EPSG:31983', // SIRGAS 2000 / UTM 23S
+  maxPixels: 1e9,
+  fileFormat: 'GeoTIFF'
+});
