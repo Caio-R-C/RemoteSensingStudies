@@ -3,7 +3,7 @@
 // =================================================================
 // Substitua o ID abaixo pelo caminho do seu Asset no GEE.
 // Exemplo: 'users/seu_usuario/bacia_df'
-var roi = ee.FeatureCollection('INSIRA_O_ID_DO_SEU_ASSET_AQUI');
+var roi = ee.FeatureCollection('users/crconst/UH_RIBEIRAO_DO_GAMA');
 
 // Centraliza o mapa na sua área
 Map.centerObject(roi, 11);
@@ -103,14 +103,15 @@ Map.addLayer(twi, twiVis, 'TWI (Índice de Umidade)');
 // =================================================================
 // Para exportar cada mapa para o Google Drive, descomente as linhas abaixo.
 
-/*
+
 Export.image.toDrive({
   image: precipMedia,
   description: 'Precipitacao_Media',
   folder: 'GEE_DF',
   region: roi,
   scale: 5566, // Resolução nativa do CHIRPS
-  maxPixels: 1e9
+  maxPixels: 1e9,
+  fileFormat: 'GeoTIFF'
 });
 
 Export.image.toDrive({
@@ -119,7 +120,8 @@ Export.image.toDrive({
   folder: 'GEE_DF',
   region: roi,
   scale: 30, // Resolução do MapBiomas
-  maxPixels: 1e9
+  maxPixels: 1e9,
+  fileFormat: 'GeoTIFF'
 });
 
 Export.image.toDrive({
@@ -128,7 +130,8 @@ Export.image.toDrive({
   folder: 'GEE_DF',
   region: roi,
   scale: 30, // Resolução do SRTM
-  maxPixels: 1e9
+  maxPixels: 1e9,
+  fileFormat: 'GeoTIFF'
 });
 
 Export.image.toDrive({
@@ -137,6 +140,6 @@ Export.image.toDrive({
   folder: 'GEE_DF',
   region: roi,
   scale: 90, // Resolução do MERIT Hydro (aproximada)
-  maxPixels: 1e9
+  maxPixels: 1e9,
+  fileFormat: 'GeoTIFF'
 });
-*/
